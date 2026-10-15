@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +32,11 @@ type postgresFixture struct {
 
 func realPostgres(t *testing.T) *postgresFixture {
 	t.Helper()
+	return realPostgresWithin(t, 15*time.Second)
+}
+
+func realPostgresWithin(t *testing.T, budget time.Duration) *postgresFixture {
+	t.Helper()
 	dsn := os.Getenv("ANYLOCK_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("set ANYLOCK_POSTGRES_DSN to run real PostgreSQL integration tests")
@@ -48,9 +52,10 @@ func realPostgres(t *testing.T) *postgresFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.db.SetMaxOpenConns(24)
+	f.db.SetMaxOpenConns(postgresTestConnections)
+	f.db.SetMaxIdleConns(postgresTestConnections)
 	var cancel context.CancelFunc
-	f.ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	f.ctx, cancel = context.WithTimeout(context.Background(), budget)
 	t.Cleanup(func() {
 		defer cancel()
 		defer f.db.Close()
@@ -246,40 +251,11 @@ func TestIntegrationPostgresTextInjectionAndMaximumTTL(t *testing.T) {
 }
 
 func TestIntegrationPostgresConcurrentAcquisitionHasOneWinner(t *testing.T) {
-	f := realPostgres(t)
-	const count = 16
-	start := make(chan struct{})
-	results := make(chan string, count)
-	errorsFound := make(chan error, count)
-	var workers sync.WaitGroup
-	for i := range count {
-		d := f.anotherDriver(t, f.prefix)
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			<-start
-			owner := fmt.Sprintf("owner-%d", i)
-			ok, err := d.TryAcquire(f.ctx, "concurrent", owner, 3*time.Second)
-			if err != nil {
-				errorsFound <- err
-			} else if ok {
-				results <- owner
-			}
-		}()
-	}
-	close(start)
-	workers.Wait()
-	close(results)
-	close(errorsFound)
-	for err := range errorsFound {
-		t.Error(err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("acquisition winners = %d; want exactly 1", len(results))
-	}
-	winner := <-results
-	if owner, _ := f.row(t, "concurrent"); owner != winner {
-		t.Fatalf("stored owner = %q; want winner %q", owner, winner)
+	for _, contenders := range []int{64, 256, 1024} {
+		t.Run(fmt.Sprint(contenders), func(t *testing.T) {
+			f := realPostgres(t)
+			postgresAcquisitionWave(t, f, "concurrent", "initial", contenders)
+		})
 	}
 }
 

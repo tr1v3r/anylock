@@ -1,0 +1,122 @@
+name: PostgreSQL stress diagnostics
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duration per profile (1s..5m, Go duration syntax)'
+        required: true
+        default: '30s'
+        type: string
+      concurrency:
+        description: 'Contenders sharing at most 24 pool connections (1..1024)'
+        required: true
+        default: '64'
+        type: string
+      keys:
+        description: 'Multikey profile keyspace (1..4096); hot profile always uses 1'
+        required: true
+        default: '32'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-stress:
+    name: PostgreSQL 16 race-enabled diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: anylock
+          POSTGRES_PASSWORD: anylock-test-only
+          POSTGRES_DB: anylock
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U anylock -d anylock"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      ANYLOCK_POSTGRES_DSN: postgres://anylock:anylock-test-only@127.0.0.1:5432/anylock?sslmode=disable
+      ANYLOCK_POSTGRES_STRESS: '1'
+      # Inputs enter the process environment only, never executable shell text.
+      # PRs use a short two-second/profile smoke to execute the real reporter.
+      ANYLOCK_POSTGRES_STRESS_DURATION: ${{ inputs.duration || '2s' }}
+      ANYLOCK_POSTGRES_STRESS_CONCURRENCY: ${{ inputs.concurrency || '16' }}
+      ANYLOCK_POSTGRES_STRESS_KEYS: ${{ inputs.keys || '16' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Compile race-enabled diagnostic test binary (not timed)
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          go version > artifacts/environment.txt
+          uname -a >> artifacts/environment.txt
+          printf '%s\n' 'PostgreSQL 16; client-only process resources; -race diagnostics, not a production benchmark' >> artifacts/environment.txt
+          go test -c -race -tags=integration -o "${RUNNER_TEMP:?}/postgres-stress.test" ./driver/postgres 2>&1 | tee artifacts/build.log
+      - name: Run hot and multikey profiles with client CPU and peak RSS
+        shell: bash
+        run: |
+          /usr/bin/time -v -o artifacts/resources.txt \
+            "${RUNNER_TEMP:?}/postgres-stress.test" \
+            -test.v -test.run '^TestIntegrationPostgresSustainedStress$' -test.timeout=12m \
+            2>&1 | tee artifacts/stress.log
+      - name: Extract structured per-profile JSON (also on test failure)
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          log = Path('artifacts/stress.log')
+          marker = 'ANYLOCK_POSTGRES_METRICS '
+          reports = []
+          with Path('artifacts/metrics.jsonl').open('w') as output:
+              for line in log.read_text().splitlines() if log.exists() else []:
+                  if marker in line:
+                      payload = json.loads(line.split(marker, 1)[1])
+                      reports.append(payload)
+                      output.write(json.dumps(payload, sort_keys=True) + '\n')
+          if sorted(report['profile'] for report in reports) != ['hot', 'multikey']:
+              raise SystemExit('expected exactly one hot and one multikey report; missing/skipped workload')
+          for report in reports:
+              total = report['totals']
+              outcomes = ('success', 'contention_or_owner_rejection', 'expected_cancel_ambiguous', 'unexpected_errors')
+              if total['attempts'] != sum(total[key] for key in outcomes):
+                  raise SystemExit('operation outcome denominator mismatch')
+              if report['latency_operation_count'] != total['attempts']:
+                  raise SystemExit('latency denominator mismatch')
+              if total['unexpected_errors'] or report['invariant_violations']:
+                  raise SystemExit('workload reported unexpected errors or invariant violations')
+              if report['require_complete_mix'] is not False:
+                  raise SystemExit('expected sustained activity mode')
+              operations = report['operations']
+              if operations['acquire']['success'] == 0:
+                  raise SystemExit('no successful acquisition activity')
+              names = ('acquire', 'renew', 'release')
+              for field, counter in (('missing_api_attempts', 'attempts'), ('missing_api_successes', 'success')):
+                  expected = [name for name in names if operations[name][counter] == 0]
+                  if report.get(field, []) != expected:
+                      raise SystemExit('inconsistent missing-mix diagnostics')
+              # An end-canceled matching Renew may prevent any Release attempt.
+              # Missing mix is diagnostic here, not an implicit throughput floor.
+          PY
+      - name: Upload logs, JSON, and client resource metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-stress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7

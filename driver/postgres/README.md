@@ -166,13 +166,122 @@ is started by the driver. Never truncate a live lock table or delete unexpired r
 ## Tests and examples
 
 ```sh
-go test -race ./driver/postgres
-# Explicit opt-in; each integration fixture creates/drops only its own table:
-ANYLOCK_POSTGRES_DSN='postgres://user:password@127.0.0.1:5432/testdb?sslmode=disable' \
-  go test -race -tags=integration ./driver/postgres
+go test -race -count=1 ./driver/postgres
+go vet ./driver/postgres
+# Local integration opt-in; every fixture creates/drops only its own random table:
+export ANYLOCK_POSTGRES_DSN='postgres://user:password@127.0.0.1:5432/testdb?sslmode=disable'
+go test -race -count=1 -tags=integration -timeout=2m ./driver/postgres
 ```
 
 [`example_test.go`](example_test.go) has executable `Output` examples for all six
 exported operations/options. Its SQL mock is test-only plumbing, not an in-memory
-PostgreSQL substitute: real atomic SQL, expiry, contention, row-lock/deadline races,
-and core integration are verified against PostgreSQL in the opt-in tests and CI.
+PostgreSQL substitute. The real-server suite covers atomic ownership, database-clock
+expiry, row-lock/deadline races, and core integration. Local integration tests skip
+without a DSN; **CI supplies one and runs the bounded regressions unconditionally**
+in the existing PostgreSQL 12/16 × Go 1.24/stable matrix. No stress environment
+variable is needed for these mandatory regressions:
+
+| Regression | Size and safety checks |
+| --- | --- |
+| Same-key acquisition | Separate 64, 256, and 1024-contender waves, each with unique owners and exactly one winner matching the stored row. |
+| Concurrent mixed churn | Hot key and 16-key profiles, each 32 workers × 16 seeded iterations; acquire, live-owner renew/release, and retired/rejected-owner probes run concurrently. No overlapping tracked long-TTL holders, no stale mutation, and no leftover rows. |
+| Expiry takeover | Three server-clock-controlled same-key expiry phases, each followed by a 64-contender wave. A separate batch expires 64 keys, then starts 128 fresh acquisition contenders plus 128 expired-owner renew/release attacks together; exactly one winner per key and no predecessor mutation. |
+| Cancellation/pool wait | 256 concurrent mixed requests: 128 pre-canceled, 128 observed queued behind one checked-out connection before cancellation; no ownership claim or row mutation, pool remains usable. |
+
+These are **contender goroutines**, not 1024 PostgreSQL connections. Each fixture
+normally caps the caller-owned pool at **24 open/idle connections**; the pool-wait
+regression deliberately uses one. Fixtures/waves are not run in parallel with each
+other. Every request has an explicit overall context (15 seconds for each bounded
+fixture), avoiding the driver's default one-second timeout under a queue. One-hour
+TTLs are much longer than the bounded workload; expiry is tested separately through
+observed server-clock conditions, not guessed sleeps. Occupancy is cleared **before**
+Release, because successors can acquire before the releasing caller receives its
+reply. There is no harness mutex around driver calls. These tests do not imply that
+gate callbacks remain mutually exclusive beyond their TTL.
+
+### Optional sustained diagnostics
+
+The sustained test skips unless `ANYLOCK_POSTGRES_STRESS=1` is explicitly set. An
+explicit opt-in without a DSN fails, rather than silently skipping the workload.
+It always runs **both** a hot-key profile and a seeded multikey profile sequentially;
+the configured duration applies to **each** profile:
+
+```sh
+# Local sustained verification works before the new workflow reaches master.
+ANYLOCK_POSTGRES_STRESS=1 \
+ANYLOCK_POSTGRES_STRESS_DURATION=30s \
+ANYLOCK_POSTGRES_STRESS_CONCURRENCY=64 \
+ANYLOCK_POSTGRES_STRESS_KEYS=32 \
+  go test -race -count=1 -tags=integration -timeout=12m -v \
+    -run '^TestIntegrationPostgresSustainedStress$' ./driver/postgres
+```
+
+| Environment variable | Default | Strict accepted bounds |
+| --- | --- | --- |
+| `ANYLOCK_POSTGRES_STRESS_DURATION` | `2s` | Go duration, `1s` through `5m` per profile |
+| `ANYLOCK_POSTGRES_STRESS_CONCURRENCY` | `64` | Integer, 1 through 1024 contender workers |
+| `ANYLOCK_POSTGRES_STRESS_KEYS` | `32` | Integer, 1 through 4096 multikey keys; hot profile always uses one |
+
+All operations retain the same long-TTL ownership/stale-owner invariants as bounded
+churn. The fixture budget is the profile duration plus 15 seconds, not the default
+15-second fixture timeout. Workers join before cleanup; only the fixture's own table
+is dropped and its own pool closed. End-context cancellation/deadline outcomes are
+expected **ambiguous** outcomes, never rollback proof or late ownership. Such owners
+are not released as an attempted rollback; fixture cleanup is independent of the
+expired workload context. A reply first observed after the workload deadline is
+conservatively discarded into the ambiguous count even if it returned no error;
+this does not claim the driver reported cancellation or that the server rolled back.
+Sustained activity requires a successful acquisition, not a completed API mix. An
+end-canceled matching Renew can stop a worker **before any Release is attempted**;
+this is reported honestly, without issuing canceled calls to pad the counts.
+`require_complete_mix` is false for sustained runs; `missing_api_attempts` and
+`missing_api_successes` identify absent activity (omitted when empty), not driver
+failures. In contrast, mandatory fixed-round regressions set `require_complete_mix`
+to true, require successful acquire/renew/release activity, reject cancellation,
+and verify an empty final table. Zero unexpected errors, zero invariant violations,
+and consistent metric counts are asserted in both modes. There are **no fixed QPS,
+latency, heap, or goroutine thresholds**.
+
+Each profile emits one `ANYLOCK_POSTGRES_METRICS {JSON}` line, even before reporting
+invariant failures. It includes:
+
+- Per-operation and total attempts, successes, contention/owner rejections, expected
+  cancellation/ambiguous outcomes, and unexpected errors. The outcome counts sum
+  to attempts. A false stale-owner probe is a rejection, not a backend error.
+- Actual elapsed seconds and **all attempted API operations/second**, not business
+  transactions/second or successful acquisitions/second. One iteration can issue
+  several API operations. The latency denominator is this same attempted-operation
+  count, including canceled and rejected requests and pool/SQL round-trip wait.
+- **Approximate** P50/P95/P99 in microseconds from a fixed 64-bin log2-nanosecond
+  histogram, merged from bounded per-worker histograms. Values are bucket upper
+  bounds (less than 2× quantization except the saturated final bucket), not exact
+  samples or interpolated percentiles. No unbounded latency list is retained.
+- Process heap snapshots, total allocated-byte/GC-cycle/GC-pause deltas, goroutine
+  snapshots, and pool open/in-use/idle counts plus WaitCount/WaitDuration deltas.
+  These are client-process observations, not server memory/GC or peak goroutines;
+  final snapshots precede fixture cleanup and can include provider shutdown work.
+
+The new [`postgres-stress.yml`](../../.github/workflows/postgres-stress.yml) runs a
+**two-second/profile, 16-worker, 16-key PR smoke** so the workload, JSON reporter,
+and workflow execute before merge. It also offers `workflow_dispatch` for longer
+runs with validated environment inputs. GitHub only exposes a new manually
+triggered workflow after its definition exists on the default branch; selecting
+the PR branch does not remove that limitation. Use PR smoke and the local command
+above before merge; dispatch becomes available afterward. There is no schedule.
+
+CI compiles the race-enabled test binary first, then `/usr/bin/time -v` measures
+execution, excluding compilation. Uploaded artifacts (also on test failure) include
+build/run logs, per-profile `metrics.jsonl`, environment details, and client-process
+CPU/peak RSS. The extractor rejects missing/duplicate profiles and inconsistent
+outcome/latency denominators, preventing a skipped or mistargeted workload from
+passing. It validates sustained activity mode and missing-mix diagnostics without
+requiring renew/release attempts or successes at shutdown. CPU/RSS cover the test
+process and both profiles/fixture work, **not the
+PostgreSQL service**. Setup failures may yield no profile JSON; failure logs remain
+available. A hard runner termination cannot guarantee an artifact upload.
+
+Race instrumentation, database configuration, pool queueing, machine load, and the
+seeded operation sequence all affect observations; scheduling is still nondeterministic.
+This is a correctness/load diagnostic, **not a production benchmark or capacity
+claim**. The repository's immutable historical experiment archive describes a
+different workload/provenance and must not be relabeled with these results.
