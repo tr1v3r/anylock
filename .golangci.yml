@@ -1,0 +1,68 @@
+version: "2"
+run:
+  timeout: 10m
+  modules-download-mode: readonly
+  build-tags: [integration]
+linters:
+  enable:
+    - bodyclose
+    - dogsled
+    - dupl
+    - errcheck
+    - gocritic
+    - gocyclo
+    - goconst
+    - gosec
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - prealloc
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    gocritic:
+      enabled-tags: [performance, style]
+      disabled-checks: [hugeParam, rangeValCopy, docStub, paramTypeCombine, unnamedResult]
+    gocyclo:
+      min-complexity: 20
+    dupl:
+      threshold: 120
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes: [G104, G115]
+    govet:
+      enable-all: true
+      disable: [fieldalignment, inline]
+    lll:
+      line-length: 120
+    misspell:
+      locale: US
+    prealloc:
+      simple: true
+      range-loops: true
+  exclusions:
+    generated: lax
+    paths: [vendor$, third_party$, testdata$]
+    rules:
+      - path: _test\.go
+        linters: [bodyclose, dogsled, dupl, errcheck, gocritic, gocyclo, goconst, gosec, ineffassign, lll, nakedret, prealloc]
+formatters:
+  enable: [gofmt, goimports]
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes: [github.com/tr1v3r/anylock]
+  exclusions:
+    generated: lax
+    paths: [vendor$, third_party$, testdata$]
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
