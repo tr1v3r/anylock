@@ -1,0 +1,39 @@
+name: PostgreSQL integration
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  postgres:
+    name: PostgreSQL ${{ matrix.postgres }} (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['12', '16']
+        go: ['1.24.x', 'stable']
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}-alpine
+        env:
+          POSTGRES_USER: anylock
+          POSTGRES_PASSWORD: anylock-test-only
+          POSTGRES_DB: anylock
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U anylock -d anylock"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: Test real PostgreSQL owner, expiry, and deadline behavior
+        env:
+          ANYLOCK_POSTGRES_DSN: postgres://anylock:anylock-test-only@127.0.0.1:5432/anylock?sslmode=disable
+        run: go test -race -count=1 -tags=integration ./driver/postgres/...
