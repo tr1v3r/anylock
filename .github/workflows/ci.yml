@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: ['.', 'driver/redis', 'integration']
+        module: ['.', 'driver/memory', 'driver/postgres', 'driver/redis', 'integration']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

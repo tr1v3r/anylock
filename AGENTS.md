@@ -8,7 +8,7 @@ Go 1.24+ multi-module repository; dependency-free core `github.com/tr1v3r/anyloc
 - `TryRun` / `Run` retain markers on success/error/panic/cancellation, never renew/release, and pass the original context. They do not promise strict mutual exclusion or exactly-once work.
 - `TryLock` / `Lock` return leases. Renewal is explicit or opt-in; independent expiry observation and bounded requests must remain intact. Never revive closed handles or affect successors.
 - Backends belong under `driver/` as independent modules. Do not import backend clients into root, including its tests/examples. Callers own client/pool resources.
-- Cross-module integration tests belong in `integration/`. Root examples use a standard-library fixture; Redis examples live with the driver. See `MODULES.md` for module pins and release order.
+- Cross-module integration tests belong in `integration/`. Root examples use a standard-library fixture; Backend examples live with each driver. See `MODULES.md` for module pins and release order.
 - New drivers are independent PRs. Do not silently weaken expiry/owner/context contracts to fit a backend; document and resolve semantic differences explicitly.
 - No fencing guarantee; clock changes, pauses, partitions and failover remain backend limitations.
 
