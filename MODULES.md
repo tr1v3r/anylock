@@ -53,9 +53,9 @@ requires a core version that contains its backend package can cause an ambiguous
 import because both modules provide the driver package. The initial split therefore
 pins the core to a reachable commit that already contains the nested module boundary. This
 bootstrap uses ordinary commits/pseudo-versions; it does not create a release.
-All three drivers currently pin that standard-library-only core snapshot. It
-predates PostgreSQL and memory and already excludes the Redis nested module, so
-it contains none of the three driver package paths. Their core API is unchanged.
+The first core release, `v0.1.0`, contains all nested module boundaries. Driver
+modules now pin that release instead of the bootstrap pseudo-version. The core
+API is unchanged.
 
 For future releases:
 

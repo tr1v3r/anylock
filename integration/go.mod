@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/tr1v3r/anylock v0.0.0-20261015161943-ddad6b0931d7
+	github.com/tr1v3r/anylock v0.1.0
 	github.com/tr1v3r/anylock/driver/redis v0.0.0-20261015161943-ddad6b0931d7
 )
 
