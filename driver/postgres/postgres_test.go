@@ -281,6 +281,36 @@ func TestPreCancelledContextsDoNotReachDatabase(t *testing.T) {
 	}
 }
 
+// An elapsed deadline must stop dispatch even before its cancellation timer runs.
+func TestElapsedDeadlineDoesNotReachDatabase(t *testing.T) {
+	ctx := &clockDeadlineContext{Context: testContext, deadline: time.Now().Add(-time.Second)}
+	dispatched := false
+	db := sql.OpenDB(&contextConnector{exec: func(context.Context) (driver.Result, error) {
+		dispatched = true
+		return driver.RowsAffected(1), nil
+	}})
+	defer db.Close()
+	d, err := New(db, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range driverOperations(d) {
+		if ok, err := op.call(ctx, "key", "owner", time.Second); ok || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("%s = %v, %v; want false, deadline exceeded", op.name, ok, err)
+		}
+	}
+	if err := d.EnsureSchema(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("EnsureSchema did not reject elapsed deadline", err)
+	}
+	// Recheck at dispatch too: time may pass after public input validation.
+	if ok, err := d.exec(ctx, "acquire", "SELECT 1"); ok || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("dispatch did not reject elapsed deadline", ok, err)
+	}
+	if dispatched {
+		t.Fatal("elapsed deadline reached SQL transport before cancellation timer fired")
+	}
+}
+
 func TestRowsAffectedAndDatabaseErrors(t *testing.T) {
 	backendErr := errors.New("backend failed")
 	for _, tc := range []struct {

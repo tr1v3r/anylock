@@ -158,6 +158,9 @@ func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 func (d *Driver) exec(ctx context.Context, operation, query string, args ...any) (bool, error) {
 	request, cancel := operationContext(ctx)
 	defer cancel()
+	if err := requestError(request); err != nil {
+		return false, fmt.Errorf("anylock/postgres: %s: %w", operation, err)
+	}
 	result, err := d.db.ExecContext(request, query, args...)
 	if operationErr := requestError(request); err != nil || operationErr != nil {
 		return false, fmt.Errorf("anylock/postgres: %s: %w", operation, errors.Join(err, operationErr))
@@ -182,7 +185,7 @@ func (d *Driver) validateContext(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("anylock/postgres: nil context")
 	}
-	return ctx.Err()
+	return requestError(ctx)
 }
 
 func (d *Driver) validate(ctx context.Context, key, owner string) error {
