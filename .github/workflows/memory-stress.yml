@@ -1,0 +1,104 @@
+name: Memory stress diagnostics
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duration PER profile (1s..5m, e.g. 30s); runs hotkey and multikey'
+        required: true
+        default: '30s'
+        type: string
+      workers:
+        description: 'Concurrent workers (1..1024)'
+        required: true
+        default: '128'
+        type: string
+      keys:
+        description: 'Multikey profile keyspace (1..4096); hotkey always uses 1'
+        required: true
+        default: '128'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  memory-stress:
+    name: Memory stress (race diagnostics)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ANYLOCK_MEMORY_STRESS: '1'
+      ANYLOCK_MEMORY_STRESS_DURATION: ${{ github.event_name == 'workflow_dispatch' && inputs.duration || '1s' }}
+      ANYLOCK_MEMORY_STRESS_WORKERS: ${{ github.event_name == 'workflow_dispatch' && inputs.workers || '16' }}
+      ANYLOCK_MEMORY_STRESS_KEYS: ${{ github.event_name == 'workflow_dispatch' && inputs.keys || '64' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare artifacts
+        run: mkdir -p artifacts
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Record environment
+        run: |
+          {
+            go version
+            go env GOOS GOARCH
+            printf 'duration_per_profile=%s workers=%s multikey_keys=%s\n' \
+              "$ANYLOCK_MEMORY_STRESS_DURATION" "$ANYLOCK_MEMORY_STRESS_WORKERS" "$ANYLOCK_MEMORY_STRESS_KEYS"
+            uname -a
+            lscpu
+          } > artifacts/environment.txt
+
+      - name: Build race diagnostic binary separately
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -c -race -o "${RUNNER_TEMP:?}/anylock-memory-stress.test" ./driver/memory \
+            2>&1 | tee artifacts/build.log
+
+      - name: Run both bounded profiles (PR smoke or manual sustained run)
+        shell: bash
+        run: |
+          set -o pipefail
+          /usr/bin/time -v -o artifacts/resources.txt \
+            "${RUNNER_TEMP:?}/anylock-memory-stress.test" \
+            -test.v -test.count=1 -test.timeout=12m -test.run='^TestMemoryStress$' \
+            2>&1 | tee artifacts/test.log
+
+      - name: Extract structured metrics even on test failure
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          directory = Path("artifacts")
+          directory.mkdir(exist_ok=True)
+          source = directory / "test.log"
+          reports = []
+          for line in source.read_text().splitlines() if source.exists() else []:
+              marker = "MEMORY_STRESS_JSON "
+              if marker in line:
+                  reports.append(json.loads(line.split(marker, 1)[1]))
+          (directory / "metrics.jsonl").write_text(
+              "".join(json.dumps(report, sort_keys=True) + "\n" for report in reports)
+          )
+          profiles = {report["profile"] for report in reports}
+          if len(reports) != 2 or profiles != {"hotkey", "multikey"}:
+              raise SystemExit("Expected executed hotkey + multikey reporter; inspect test.log")
+          PY
+
+      - name: Upload metrics, test logs and process resources
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-stress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
