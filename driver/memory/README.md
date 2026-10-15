@@ -114,6 +114,13 @@ driver. Stop protected work when lease validity ends, and release with a live
 cleanup context. See the [core contract](../../driver.go) and
 [core usage guide](../../README.md).
 
+## Module
+
+Install this driver explicitly with `go get github.com/tr1v3r/anylock/driver/memory`.
+It is a separate module depending only on the standard-library-only core.
+The following test commands run from this directory (`cd driver/memory`);
+repository-wide checks are documented in [MODULES.md](../../MODULES.md).
+
 ## Tests
 
 The package includes executable examples for every exported symbol, portable
@@ -121,8 +128,8 @@ Go 1.24 unit/concurrency tests, and Go 1.25+ build-tagged `testing/synctest` tes
 exact expiry, post-wait behavior, gates, and automatic renewal:
 
 ```sh
-go test -race -count=1 ./driver/memory
-go test -run '^Example' -v ./driver/memory
+go test -race -count=1 ./...
+go test -run '^Example' -v ./...
 ```
 
 ### Mandatory bounded concurrency regressions
@@ -152,7 +159,7 @@ These are part of the existing default CI Go 1.24/current race and coverage jobs
 not optional stress-only coverage. Repeat just the bounded tests locally:
 
 ```sh
-go test -race -count=10 -run '^TestBounded' ./driver/memory
+go test -race -count=10 -run '^TestBounded' ./...
 ```
 
 ### Optional sustained diagnostic stress
@@ -170,7 +177,7 @@ before starting any worker; invalid values fail rather than silently clamp:
 ```sh
 ANYLOCK_MEMORY_STRESS=1 ANYLOCK_MEMORY_STRESS_DURATION=30s \
   ANYLOCK_MEMORY_STRESS_WORKERS=128 ANYLOCK_MEMORY_STRESS_KEYS=256 \
-  go test -race -count=1 -timeout=12m -run '^TestMemoryStress$' -v ./driver/memory
+  go test -race -count=1 -timeout=12m -run '^TestMemoryStress$' -v ./...
 ```
 
 Workers call the real shared driver concurrently with independent fixed-seed key

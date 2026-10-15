@@ -1,15 +1,16 @@
 # anylock
 
 Backend-independent fixed-TTL execution gates and owner-checked lease locks for
-Go 1.24+. The core uses only standard-library packages. Redis is provided as an
-independent driver, not part of the public abstraction. Additional backends are
-reviewed separately against the same atomic contract.
+Go 1.24+. The core uses only standard-library packages. Redis, PostgreSQL and
+process-local memory are provided as independent driver modules. Each driver
+implements the same atomic contract; see [module boundaries](MODULES.md).
 
 ```sh
 go get github.com/tr1v3r/anylock
+# Add only the backend you use:
+go get github.com/tr1v3r/anylock/driver/redis
+# Or: /driver/postgres, /driver/memory
 ```
-
-Migrated from `github.com/tr1v3r/pkg/lock`; see [migration and provenance](MIGRATION.md).
 
 ## Choose the behavior
 
@@ -245,22 +246,31 @@ provided. Core abstractions do not strengthen a backend's actual guarantees.
 [`example_test.go`](example_test.go) demonstrates construction/options, both
 execution and lease entry points, renewal/release, and lease state/context queries.
 Examples also distinguish skipped execution from callback failure and show how to
-cancel a wait. The test-only setup uses miniredis rather than an external server;
-replace it with your configured client in an application. The Redis adapter has
-its own [executable driver examples](driver/redis/example_test.go). All 21 examples
-are executed in the default suite; real Redis semantics have opt-in integration tests.
+cancel a wait. Core examples use a standard-library-only in-memory fixture;
+applications inject a driver for their coordination backend. Driver examples live
+with [Redis](driver/redis/example_test.go), [PostgreSQL](driver/postgres/example_test.go)
+and [memory](driver/memory/example_test.go). All examples run in the default
+workspace suite; real backend semantics have opt-in integration tests.
+
+## Modules and testing
+
+The core, each driver and the cross-module integration suite have separate
+`go.mod` files. Import paths and public APIs are unchanged. Installing the core does not
+require backend clients, simulators or SQL adapters. See [module layout, standalone
+checks and release order](MODULES.md).
 
 ```sh
-go test -run '^Example' ./...
-```
-
-## Testing
-
-```sh
-go test -race ./...
+# From a checkout: go.work connects the local modules.
+./scripts/modules.sh go test -race -count=1 ./...
+./scripts/modules.sh go vet ./...
+./scripts/modules.sh go test -run '^Example' ./...
 # Optional real Redis tests; unique namespace, no FLUSHDB:
-ANYLOCK_REDIS_ADDR=127.0.0.1:6379 go test -race -tags=integration ./...
+ANYLOCK_REDIS_ADDR=127.0.0.1:6379 ./scripts/modules.sh go test -race -tags=integration ./...
 ```
+
+PostgreSQL tests use sqlmock by default; see its [driver guide](driver/postgres/README.md)
+for PostgreSQL 12/16 integration tests. The [memory driver](driver/memory/README.md)
+has deterministic expiry and concurrency tests, plus optional stress diagnostics.
 
 Default Redis tests use miniredis and exercise owner checks, expiry, Lua,
 contention, rounding and failure responses. Core tests include a memory driver,

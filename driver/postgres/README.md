@@ -163,14 +163,22 @@ For large tables, use bounded batches, a suitable expiry index, and an operation
 statement/lock timeout. Reserve the table for this protocol; no background cleaner
 is started by the driver. Never truncate a live lock table or delete unexpired rows.
 
+## Module
+
+Install this driver with `go get github.com/tr1v3r/anylock/driver/postgres`.
+Its production code uses `database/sql` and the core; pgx and sqlmock belong to
+this module for tests/examples. Callers choose their own SQL adapter.
+Run the following commands from this directory (`cd driver/postgres`); see
+[MODULES.md](../../MODULES.md) for repository-wide checks.
+
 ## Tests and examples
 
 ```sh
-go test -race -count=1 ./driver/postgres
-go vet ./driver/postgres
+go test -race -count=1 ./...
+go vet ./...
 # Local integration opt-in; every fixture creates/drops only its own random table:
 export ANYLOCK_POSTGRES_DSN='postgres://user:password@127.0.0.1:5432/testdb?sslmode=disable'
-go test -race -count=1 -tags=integration -timeout=2m ./driver/postgres
+go test -race -count=1 -tags=integration -timeout=2m ./...
 ```
 
 [`example_test.go`](example_test.go) has executable `Output` examples for all six
@@ -213,7 +221,7 @@ ANYLOCK_POSTGRES_STRESS_DURATION=30s \
 ANYLOCK_POSTGRES_STRESS_CONCURRENCY=64 \
 ANYLOCK_POSTGRES_STRESS_KEYS=32 \
   go test -race -count=1 -tags=integration -timeout=12m -v \
-    -run '^TestIntegrationPostgresSustainedStress$' ./driver/postgres
+    -run '^TestIntegrationPostgresSustainedStress$' ./...
 ```
 
 | Environment variable | Default | Strict accepted bounds |

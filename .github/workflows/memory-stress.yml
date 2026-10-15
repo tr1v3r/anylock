@@ -58,7 +58,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -c -race -o "${RUNNER_TEMP:?}/anylock-memory-stress.test" ./driver/memory \
+          (cd driver/memory && go test -c -race -o "${RUNNER_TEMP:?}/anylock-memory-stress.test" .) \
             2>&1 | tee artifacts/build.log
 
       - name: Run both bounded profiles (PR smoke or manual sustained run)

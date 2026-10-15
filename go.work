@@ -1,0 +1,9 @@
+go 1.24.0
+
+use (
+	.
+	./driver/memory
+	./driver/postgres
+	./driver/redis
+	./integration
+)

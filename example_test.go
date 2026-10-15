@@ -4,51 +4,78 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	goredis "github.com/redis/go-redis/v9"
-
 	"github.com/tr1v3r/anylock"
-	redisdriver "github.com/tr1v3r/anylock/driver/redis"
 )
 
-// newExampleClient gives each example its own Redis server and connections.
-// In production, replace miniredis with an application-owned Redis client;
-// keep ContextTimeoutEnabled enabled and close the client on shutdown.
-func newExampleClient() (*goredis.Client, func()) {
-	server, err := miniredis.Run()
-	if err != nil {
-		panic(err)
-	}
-	client := goredis.NewClient(&goredis.Options{
-		Addr: server.Addr(), ContextTimeoutEnabled: true, MaxRetries: -1,
-	})
-	return client, func() {
-		closeErr := client.Close()
-		server.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}
+// This in-memory fixture keeps executable core examples dependency-free. It is
+// for examples only; applications inject a driver for their coordination backend.
+type exampleRecord struct {
+	owner    string
+	deadline time.Time
 }
 
-func newExampleLocker(options ...anylock.Option) (*anylock.Locker, func()) {
-	client, cleanup := newExampleClient()
-	driver, err := redisdriver.New(client, "example:leases:")
-	if err != nil {
-		cleanup()
-		panic(err)
-	}
-	locker, err := anylock.New(driver, options...)
-	if err != nil {
-		cleanup()
-		panic(err)
-	}
-	return locker, cleanup
+type exampleDriver struct {
+	mu      sync.Mutex
+	records map[string]exampleRecord
 }
 
-// releaseExampleLease stops all lease workers before the Redis client is closed.
+func newExampleDriver() *exampleDriver {
+	return &exampleDriver{records: make(map[string]exampleRecord)}
+}
+
+func (d *exampleDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if record, ok := d.records[key]; ok && time.Now().Before(record.deadline) {
+		return false, nil
+	}
+	d.records[key] = exampleRecord{owner, time.Now().Add(ttl)}
+	return true, nil
+}
+
+func (d *exampleDriver) Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	record, ok := d.records[key]
+	if !ok || record.owner != owner || !time.Now().Before(record.deadline) {
+		return false, nil
+	}
+	d.records[key] = exampleRecord{owner, time.Now().Add(ttl)}
+	return true, nil
+}
+
+func (d *exampleDriver) Release(ctx context.Context, key, owner string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	record, ok := d.records[key]
+	if !ok || record.owner != owner || !time.Now().Before(record.deadline) {
+		return false, nil
+	}
+	delete(d.records, key)
+	return true, nil
+}
+
+func newExampleLocker(options ...anylock.Option) *anylock.Locker {
+	locker, err := anylock.New(newExampleDriver(), options...)
+	if err != nil {
+		panic(err)
+	}
+	return locker
+}
+
+// releaseExampleLease stops all lease workers before the example returns.
 // Cleanup needs its own live context, not the possibly canceled work context.
 func releaseExampleLease(lease *anylock.Lease) {
 	cleanup, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -59,14 +86,8 @@ func releaseExampleLease(lease *anylock.Lease) {
 }
 
 func ExampleNew() {
-	client, cleanup := newExampleClient()
-	defer cleanup()
-
-	// Inject a backend; the core package does not own Redis connections.
-	driver, err := redisdriver.New(client, "myapp:gates:")
-	if err != nil {
-		panic(err)
-	}
+	// Inject a Driver; the core package does not own backend resources.
+	driver := newExampleDriver()
 	locker, err := anylock.New(driver)
 	if err != nil {
 		panic(err)
@@ -80,8 +101,7 @@ func ExampleNew() {
 
 func ExampleWithRetryInterval() {
 	// Only contention is retried, with this delay between attempts.
-	locker, cleanup := newExampleLocker(anylock.WithRetryInterval(20 * time.Millisecond))
-	defer cleanup()
+	locker := newExampleLocker(anylock.WithRetryInterval(20 * time.Millisecond))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	executed, err := locker.Run(ctx, "job:123", time.Hour, func(context.Context) error { return nil })
@@ -92,8 +112,7 @@ func ExampleWithRetryInterval() {
 
 func ExampleWithOperationTimeout() {
 	// Each backend request is bounded; the callback still receives the caller ctx.
-	locker, cleanup := newExampleLocker(anylock.WithOperationTimeout(500 * time.Millisecond))
-	defer cleanup()
+	locker := newExampleLocker(anylock.WithOperationTimeout(500 * time.Millisecond))
 	ctx := context.Background()
 	executed, err := locker.TryRun(ctx, "job:123", time.Hour, func(callbackCtx context.Context) error {
 		fmt.Println("original caller context:", callbackCtx == ctx)
@@ -107,8 +126,7 @@ func ExampleWithOperationTimeout() {
 
 func ExampleWithAutoRenew() {
 	// Auto-renew is opt-in for leases; it has no effect on TryRun or Run gates.
-	locker, cleanup := newExampleLocker(anylock.WithAutoRenew())
-	defer cleanup()
+	locker := newExampleLocker(anylock.WithAutoRenew())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	lease, err := locker.TryLock(ctx, "resource:123", time.Hour)
@@ -129,8 +147,7 @@ func ExampleWithAutoRenew() {
 }
 
 func ExampleLocker_TryRun() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	process := func(context.Context) error {
 		fmt.Println("process event:123")
 		return nil
@@ -148,8 +165,7 @@ func ExampleLocker_TryRun() {
 }
 
 func ExampleLocker_TryRun_callbackError() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	failure := errors.New("processing failed")
 	executed, err := locker.TryRun(context.Background(), "event:123", time.Hour,
 		func(context.Context) error { return failure })
@@ -165,8 +181,7 @@ func ExampleLocker_TryRun_callbackError() {
 }
 
 func ExampleLocker_Run() {
-	locker, cleanup := newExampleLocker(anylock.WithRetryInterval(20 * time.Millisecond))
-	defer cleanup()
+	locker := newExampleLocker(anylock.WithRetryInterval(20 * time.Millisecond))
 	// A caller deadline also bounds waiting for a contended window to expire.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -181,8 +196,7 @@ func ExampleLocker_Run() {
 }
 
 func ExampleLocker_Run_cancellation() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	executed, err := locker.TryRun(context.Background(), "job:123", time.Hour,
 		func(context.Context) error { return nil })
 	if err != nil || !executed {
@@ -199,8 +213,7 @@ func ExampleLocker_Run_cancellation() {
 }
 
 func ExampleLocker_TryLock() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	lease, err := locker.TryLock(context.Background(), "resource:123", time.Hour)
 	if err != nil {
 		panic(err)
@@ -216,8 +229,7 @@ func ExampleLocker_TryLock() {
 }
 
 func ExampleLocker_Lock() {
-	locker, cleanup := newExampleLocker(anylock.WithRetryInterval(20 * time.Millisecond))
-	defer cleanup()
+	locker := newExampleLocker(anylock.WithRetryInterval(20 * time.Millisecond))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	lease, err := locker.Lock(ctx, "resource:123", time.Hour)
@@ -231,8 +243,7 @@ func ExampleLocker_Lock() {
 }
 
 func ExampleLease_Renew() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	lease, err := locker.TryLock(context.Background(), "resource:123", time.Hour)
 	if err != nil {
 		panic(err)
@@ -247,8 +258,7 @@ func ExampleLease_Renew() {
 }
 
 func ExampleLease_Release() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	lease, err := locker.TryLock(context.Background(), "resource:123", time.Hour)
 	if err != nil {
 		panic(err)
@@ -262,22 +272,20 @@ func ExampleLease_Release() {
 }
 
 func ExampleLease_Key() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	lease, err := locker.TryLock(context.Background(), "resource:123", time.Hour)
 	if err != nil {
 		panic(err)
 	}
 	defer releaseExampleLease(lease)
-	// The logical key does not include the Redis namespace prefix.
+	// The logical key does not include a backend namespace prefix.
 	fmt.Println(lease.Key())
 	// Output:
 	// resource:123
 }
 
 func ExampleLease_Deadline() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	lease, err := locker.TryLock(context.Background(), "resource:123", time.Hour)
 	if err != nil {
 		panic(err)
@@ -290,8 +298,7 @@ func ExampleLease_Deadline() {
 }
 
 func ExampleLease_Done() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	lease, err := locker.TryLock(ctx, "resource:123", time.Hour)
@@ -308,8 +315,7 @@ func ExampleLease_Done() {
 }
 
 func ExampleLease_Err() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	lease, err := locker.TryLock(context.Background(), "resource:123", time.Hour)
 	if err != nil {
 		panic(err)
@@ -326,8 +332,7 @@ func ExampleLease_Err() {
 }
 
 func ExampleLease_Context() {
-	locker, cleanup := newExampleLocker()
-	defer cleanup()
+	locker := newExampleLocker()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	lease, err := locker.TryLock(ctx, "resource:123", time.Hour)

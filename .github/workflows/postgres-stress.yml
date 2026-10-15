@@ -62,7 +62,7 @@ jobs:
           go version > artifacts/environment.txt
           uname -a >> artifacts/environment.txt
           printf '%s\n' 'PostgreSQL 16; client-only process resources; -race diagnostics, not a production benchmark' >> artifacts/environment.txt
-          go test -c -race -tags=integration -o "${RUNNER_TEMP:?}/postgres-stress.test" ./driver/postgres 2>&1 | tee artifacts/build.log
+          (cd driver/postgres && go test -c -race -tags=integration -o "${RUNNER_TEMP:?}/postgres-stress.test" .) 2>&1 | tee artifacts/build.log
       - name: Run hot and multikey profiles with client CPU and peak RSS
         shell: bash
         run: |

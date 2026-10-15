@@ -36,4 +36,5 @@ jobs:
       - name: Test real PostgreSQL owner, expiry, and deadline behavior
         env:
           ANYLOCK_POSTGRES_DSN: postgres://anylock:anylock-test-only@127.0.0.1:5432/anylock?sslmode=disable
-        run: go test -race -count=1 -tags=integration ./driver/postgres/...
+        working-directory: driver/postgres
+        run: go test -race -count=1 -tags=integration ./...
