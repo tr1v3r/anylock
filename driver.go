@@ -27,7 +27,7 @@ import (
 //
 // TTL is measured by the backend; it must not be rounded down. Clock jumps,
 // backend failover, pauses, and partitions remain part of the backend's safety
-// model. The core cannot turn a weak backend into a strongly consistent anylock.
+// model. The core cannot turn a weak backend into a strongly consistent lock.
 // Driver implementations own their connection resources; Locker never closes them.
 // TryRun and Run use only TryAcquire; they never renew or release reservations.
 type Driver interface {
