@@ -27,4 +27,4 @@ Keep Go1.24 support; Go1.25+ `testing/synctest` tests retain version build tags.
 
 Format owned Go files with `goimports-reviser -project-name github.com/tr1v3r/anylock -rm-unused ...`; lint v2.12.2 also enforces gofmt/goimports with the module-local prefix. Production lines at most120 characters. Table tests and deterministic barriers beat scheduler sleeps. Backend errors are not contention; cancellation does not prove rollback. Preserve error identity and post-wait actual-deadline checks.
 
-Use targeted staging, Conventional Commits and personal identity `tr1v3r <tr1v3r@outlook.com>`. Preserve unrelated changes; do not amend, force-push, merge PRs or tag releases without explicit authorization. Check `MIGRATION.md` and immutable historical experiment provenance before claiming performance or changing archived artifacts.
+Use targeted staging, Conventional Commits and personal identity `tr1v3r <tr1v3r@outlook.com>`. Preserve unrelated changes; do not amend, force-push, merge PRs or tag releases without explicit authorization. Check immutable historical experiment provenance before claiming performance or changing archived artifacts.

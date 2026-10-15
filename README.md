@@ -12,8 +12,6 @@ go get github.com/tr1v3r/anylock/driver/redis
 # Or: /driver/postgres, /driver/memory
 ```
 
-Migrated from `github.com/tr1v3r/pkg/lock`; see [migration and provenance](MIGRATION.md).
-
 ## Choose the behavior
 
 | API | Purpose | After work finishes | Renewal |
