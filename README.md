@@ -22,15 +22,112 @@ go get github.com/tr1v3r/anylock/driver/redis
 Both modes share the driver and key namespace, so a gate and a lease using the
 same key contend. Reserve distinct prefixes/keys when their domains should differ.
 
-## Fixed-TTL execution
+## Choose a driver
 
-Given a configured `anylock.Driver` (Redis setup is shown below):
+Each driver is a separate module. All three support both execution gates and
+leases; the backend determines where callers coordinate and how expiry is stored.
+The core and every driver have the same cooperative safety limits described
+[below](#safety-boundaries), including no fencing or exactly-once guarantee.
+
+| Driver | Main dependencies and characteristics | Atomic operations and expiry | Suitable uses |
+| --- | --- | --- | --- |
+| [memory](driver/memory/README.md) | Core and standard library only; no external service, connection or driver worker. Only callers sharing one Driver instance coordinate. | A context-selectable gate protects a map and indexed min-heap. Monotonic-clock TTLs have nanosecond precision; operations sweep expired entries, so idle entries can remain allocated. | Tests, local tools and coordination between goroutines in one process. Separate instances/processes and restarts have independent state. |
+| [Redis](driver/redis/README.md) | Core, go-redis and a shared Redis service; callers own the client. Configure context and socket deadlines. | Acquire uses `SET NX PX`; Lua checks the owner before renewal/deletion. Redis expires keys; TTLs round up to milliseconds. | Cross-process TTL gates and leases when Redis is already available. Network latency and asynchronous failover remain part of the safety model. |
+| [PostgreSQL](driver/postgres/README.md) | Core and `database/sql` in production, a caller-chosen SQL adapter (for example pgx), and a shared permanent table. PostgreSQL 12+ syntax; caller owns the pool. | Acquire uses an UPSERT. Renewal/release lock the row before checking owner and expiry. Database-clock TTLs round up to microseconds; callers clean up unused expired rows. | Cross-process coordination backed by an existing PostgreSQL database, with provisioned schema and capacity for SQL traffic/row contention. Leases do not make protected business writes transactional. |
+
+Backend clients/simulators used in driver tests stay in their own modules; they
+are not dependencies of the core. See [module boundaries](MODULES.md).
+Create and share drivers/Lockers at application startup. All examples below return
+an ordinary `*anylock.Locker` for use with the APIs in the following sections.
+
+### Memory
+
+Share the same Driver pointer wherever callers must contend. `memory.New()` starts
+no worker and needs no `Close`; calling it again creates an independent store.
 
 ```go
-locker, err := anylock.New(driver)
-if err != nil {
-    return err
+import (
+    "github.com/tr1v3r/anylock"
+    "github.com/tr1v3r/anylock/driver/memory"
+)
+
+func newMemoryLocker() (*anylock.Locker, error) {
+    driver := memory.New()
+    return anylock.New(driver)
 }
+```
+
+### Redis
+
+Create a shared client with context deadlines enabled and socket deadlines left
+enabled, for example:
+
+```go
+client := goredis.NewClient(&goredis.Options{
+    Addr: "127.0.0.1:6379",
+    ContextTimeoutEnabled: true,
+})
+defer client.Close() // application-owned; normally closed at shutdown
+```
+
+Pass it to the driver; reserve a prefix shared by every cooperating process:
+
+```go
+import (
+    goredis "github.com/redis/go-redis/v9"
+    "github.com/tr1v3r/anylock"
+    redisdriver "github.com/tr1v3r/anylock/driver/redis"
+)
+
+func newRedisLocker(client *goredis.Client) (*anylock.Locker, error) {
+    driver, err := redisdriver.New(client, "myapp:locks:")
+    if err != nil {
+        return nil, err
+    }
+    return anylock.New(driver)
+}
+```
+
+### PostgreSQL
+
+Choose a context-aware `database/sql` adapter. With pgx, register
+`github.com/jackc/pgx/v5/stdlib` via a blank import and open a shared pool with
+`sql.Open("pgx", dsn)`; the application closes it at shutdown. All cooperating
+processes must use the same database, table and prefix.
+
+```go
+import (
+    "context"
+    "database/sql"
+
+    "github.com/tr1v3r/anylock"
+    postgresdriver "github.com/tr1v3r/anylock/driver/postgres"
+)
+
+func newPostgresLocker(ctx context.Context, db *sql.DB) (*anylock.Locker, error) {
+    driver, err := postgresdriver.New(db, "myapp:locks:")
+    if err != nil {
+        return nil, err
+    }
+    // Explicit one-time setup; prefer a serialized migration in production.
+    if err := driver.EnsureSchema(ctx); err != nil {
+        return nil, err
+    }
+    return anylock.New(driver)
+}
+```
+
+`New` does not connect or create the table. `EnsureSchema` creates the default
+`public.pkg_lock_leases` table if absent; it does not validate/migrate an existing
+table. Use `WithTable` for another table and see the [driver guide](driver/postgres/README.md)
+for schema, permissions and expiry cleanup. `EnsureSchema` may be omitted when the
+table is already provisioned; do not run concurrent startup DDL on every replica.
+
+## Fixed-TTL execution
+
+Using a Locker created with any of the drivers above:
+
+```go
 executed, err := locker.TryRun(ctx, "event:123", time.Minute, func(work context.Context) error {
     return processEvent(work) // application function
 })
@@ -71,30 +168,19 @@ execution, durable idempotency, or shared-result singleflight.
 
 ## Lease usage
 
+Use the same Locker with the lease APIs. To enable automatic renewal, pass
+`anylock.WithAutoRenew()` to `anylock.New` during setup; it is off by default.
+Use `WithOperationTimeout` to change the default one-second request budget.
+
 ```go
 import (
     "context"
     "time"
 
-    goredis "github.com/redis/go-redis/v9"
     "github.com/tr1v3r/anylock"
-    redisdriver "github.com/tr1v3r/anylock/driver/redis"
 )
 
-func run(ctx context.Context, client *goredis.Client) error {
-    // Construct client with ContextTimeoutEnabled: true and socket deadlines
-    // enabled. New rejects known clients that would ignore operation deadlines.
-    driver, err := redisdriver.New(client, "myapp:locks:")
-    if err != nil {
-        return err
-    }
-    locker, err := anylock.New(driver,
-        anylock.WithAutoRenew(), // opt-in; omit for explicit Renew only
-        anylock.WithOperationTimeout(time.Second),
-    )
-    if err != nil {
-        return err
-    }
+func run(ctx context.Context, locker *anylock.Locker) error {
     lease, err := locker.Lock(ctx, "resource:123", 10*time.Second)
     if err != nil {
         return err
@@ -111,16 +197,6 @@ func run(ctx context.Context, client *goredis.Client) error {
     // Consult lease.Err() to distinguish expiry/loss from a closed handle.
     return performWork(lease.Context()) // application function
 }
-```
-
-A typical client is created as:
-
-```go
-client := goredis.NewClient(&goredis.Options{
-    Addr: "127.0.0.1:6379",
-    ContextTimeoutEnabled: true,
-})
-defer client.Close() // the caller owns client resources
 ```
 
 ## API and lifecycle
