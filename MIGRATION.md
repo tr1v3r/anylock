@@ -14,7 +14,8 @@ The original MIT notice is preserved verbatim in [LICENSE](LICENSE).
 - Calls such as `lock.New` become `anylock.New`; API shapes and execution/lease
   lifecycle behavior are unchanged. No compatibility copy is maintained in pkg.
 - Integration opt-in variable changes from `PKG_LOCK_REDIS_ADDR` to
-  `ANYLOCK_REDIS_ADDR`. Run tests from module root with `./...`.
+  `ANYLOCK_REDIS_ADDR`. The initial baseline was a single module; current
+  multi-module test commands and release rules are documented in [MODULES.md](MODULES.md).
 - PostgreSQL deliberately is **not** in the migration baseline: it is ported in a
   separate driver PR, alongside separate etcd and memory driver proposals.
 - Only relevant dependencies remain. The initial repository history starts with

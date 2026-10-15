@@ -1,0 +1,10 @@
+go 1.24.0
+
+use (
+	.
+	./driver/redis
+	./integration
+)
+
+// Bootstrap only; removed after the module boundary commit is published.
+replace github.com/tr1v3r/anylock/driver/redis v0.0.0 => ./driver/redis

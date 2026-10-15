@@ -7,6 +7,8 @@ reviewed separately against the same atomic contract.
 
 ```sh
 go get github.com/tr1v3r/anylock
+# Add only the backend you use:
+go get github.com/tr1v3r/anylock/driver/redis
 ```
 
 Migrated from `github.com/tr1v3r/pkg/lock`; see [migration and provenance](MIGRATION.md).
@@ -245,21 +247,25 @@ provided. Core abstractions do not strengthen a backend's actual guarantees.
 [`example_test.go`](example_test.go) demonstrates construction/options, both
 execution and lease entry points, renewal/release, and lease state/context queries.
 Examples also distinguish skipped execution from callback failure and show how to
-cancel a wait. The test-only setup uses miniredis rather than an external server;
-replace it with your configured client in an application. The Redis adapter has
-its own [executable driver examples](driver/redis/example_test.go). All 21 examples
-are executed in the default suite; real Redis semantics have opt-in integration tests.
+cancel a wait. Core examples use a standard-library-only in-memory fixture;
+applications inject a driver for their coordination backend. Redis has its own
+[executable driver examples](driver/redis/example_test.go). All 21 examples run in
+the default workspace suite; real Redis semantics have opt-in integration tests.
+
+## Modules and testing
+
+The core, Redis driver and cross-module integration suite have separate `go.mod`
+files. Import paths and public APIs are unchanged. Installing the core does not
+require Redis client or simulator dependencies. See [module layout, standalone
+checks and release order](MODULES.md).
 
 ```sh
-go test -run '^Example' ./...
-```
-
-## Testing
-
-```sh
-go test -race ./...
+# From a checkout: go.work connects the local modules.
+./scripts/modules.sh go test -race -count=1 ./...
+./scripts/modules.sh go vet ./...
+./scripts/modules.sh go test -run '^Example' ./...
 # Optional real Redis tests; unique namespace, no FLUSHDB:
-ANYLOCK_REDIS_ADDR=127.0.0.1:6379 go test -race -tags=integration ./...
+ANYLOCK_REDIS_ADDR=127.0.0.1:6379 ./scripts/modules.sh go test -race -tags=integration ./...
 ```
 
 Default Redis tests use miniredis and exercise owner checks, expiry, Lua,

@@ -7,20 +7,22 @@ on:
 
 jobs:
   lint:
-    name: Lint
+    name: Lint (${{ matrix.module }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: ['.', 'driver/redis', 'integration']
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
+          cache-dependency-path: '**/go.sum'
+      - uses: golangci/golangci-lint-action@v7
         with:
-          # exact pin: future 2.x releases may add checks that break the gate
           version: v2.12.2
+          working-directory: ${{ matrix.module }}
+          args: --config=${{ github.workspace }}/.golangci.yml
 
   test:
     name: Test (Go ${{ matrix.go }})
@@ -30,19 +32,34 @@ jobs:
         go: ['1.24.x', 'stable']
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
+          cache-dependency-path: '**/go.sum'
+      - name: Test every workspace module with race detection
+        run: ./scripts/modules.sh go test -race -count=1 ./...
+      - name: Coverage for every module
+        run: ./scripts/modules.sh go test -count=1 -coverprofile=coverage.out ./...
+      - name: Report coverage per module
+        run: ./scripts/modules.sh sh -c 'go tool cover -func=coverage.out | tail -1'
 
-      - name: Run tests with race detector
-        run: go test -race -count=1 ./...
-
-      - name: Run tests with coverage
-        run: go test -count=1 -coverprofile=coverage.out ./...
-
-      - name: Report total coverage
-        run: go tool cover -func=coverage.out | tail -1
+  standalone:
+    name: Standalone modules
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - name: Verify each module is tidy without workspace replacements
+        run: ./scripts/modules.sh go mod tidy -diff
+      - name: Core has no external module dependencies
+        run: test "$(go list -m all | wc -l)" -eq 1
+      - name: Test standalone modules, including integration-tag compilation
+        run: ./scripts/modules.sh go test -race -count=1 -tags=integration ./...
 
   redis:
     name: Redis integration
@@ -50,8 +67,7 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 1s
@@ -59,12 +75,11 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Run real Redis lease tests with race detector
+          cache-dependency-path: '**/go.sum'
+      - name: Test all modules against real Redis
         env:
           ANYLOCK_REDIS_ADDR: 127.0.0.1:6379
-        run: go test -race -count=1 -tags=integration ./...
+        run: ./scripts/modules.sh go test -race -count=1 -tags=integration ./...

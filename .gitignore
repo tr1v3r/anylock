@@ -1,5 +1,5 @@
-/coverage.out
-/coverage.html
+coverage.out
+coverage.html
 *.test
 .DS_Store
 /task_plan.md

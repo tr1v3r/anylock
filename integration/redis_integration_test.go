@@ -1,18 +1,10 @@
 //go:build integration
 
-package anylock_test
+package integration_test
 
 import (
-	"context"
-	"crypto/rand"
-	"errors"
-	"os"
-	"testing"
-	"time"
-
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/tr1v3r/anylock"
 	redisdriver "github.com/tr1v3r/anylock/driver/redis"
 )
 
