@@ -164,6 +164,39 @@ For large tables, use bounded batches, a suitable expiry index, and an operation
 statement/lock timeout. Reserve the table for this protocol; no background cleaner
 is started by the driver. Never truncate a live lock table or delete unexpired rows.
 
+Implement cleanup as a scheduled statement, not as a trigger on the lease table:
+triggers only fire on writes, so an idle table never gets purged, and a trigger
+would couple every lock operation to the purge. `pg_cron` can host the schedule
+inside PostgreSQL; it is time-driven, runs the same expired-only delete, and stays
+decoupled from the lock path. Self-hosted servers need the extension installed
+and `shared_preload_libraries = 'pg_cron'` before `CREATE EXTENSION pg_cron`
+(superuser); managed services expose it through their own extension settings.
+
+```sql
+-- One-time setup: extension plus the expiry index the schema does not create.
+CREATE EXTENSION pg_cron;
+CREATE INDEX CONCURRENTLY anylock_leases_expires_idx
+    ON public.anylock_leases (expires_at);
+
+SELECT cron.schedule(
+    'anylock-lease-purge',
+    '*/10 * * * *',  -- cron syntax; interpreted in the cluster-wide
+                     -- cron.timezone setting (GMT by default)
+    $$DELETE FROM public.anylock_leases WHERE ctid IN (
+        SELECT ctid FROM public.anylock_leases
+        WHERE expires_at <= clock_timestamp() LIMIT 5000)$$);
+```
+
+pg_cron never runs two instances of the same job concurrently: an overlapping
+batch queues instead of doubling, so raise the frequency rather than the batch
+size when falling behind. Inspect runs through `cron.job` and
+`cron.job_run_details`, and remove the job with
+`cron.unschedule('anylock-lease-purge')`. Jobs run on the primary, not on a hot
+standby, and execute in the database where they were scheduled; use
+`cron.schedule_in_database` for other databases. Adjust the table name when
+`WithTable` selected another one. Without `pg_cron`, any external scheduler
+issuing the same statement is equivalent.
+
 ## Module
 
 Install this driver with `go get github.com/tr1v3r/anylock/driver/postgres`.
