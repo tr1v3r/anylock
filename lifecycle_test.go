@@ -21,7 +21,7 @@ func TestLifecycleDefaultExpiryWithoutRenewal(t *testing.T) {
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
 		select {
-		case <-lease.done:
+		case <-testConcreteLease(t, lease).done:
 		default:
 			t.Fatal("expiry did not close Done")
 		}
@@ -87,7 +87,7 @@ func TestLifecycleAutoRenewAndCancellation(t *testing.T) {
 		cancel()
 		synctest.Wait()
 		select {
-		case <-lease.done:
+		case <-testConcreteLease(t, lease).done:
 		default:
 			t.Fatal("cancellation did not signal lease loss")
 		}
@@ -118,7 +118,7 @@ func TestLifecycleAutoRenewFailure(t *testing.T) {
 			time.Sleep(time.Second)
 			synctest.Wait()
 			select {
-			case <-lease.done:
+			case <-testConcreteLease(t, lease).done:
 			default:
 				t.Fatal("renewal failure not reported")
 			}
@@ -174,7 +174,7 @@ func TestLifecycleInflightRenewBoundedByOldDeadline(t *testing.T) {
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
 		select {
-		case <-lease.done:
+		case <-testConcreteLease(t, lease).done:
 		default:
 			t.Fatal("in-flight renew outlived original deadline")
 		}

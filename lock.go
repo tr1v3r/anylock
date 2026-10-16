@@ -104,7 +104,8 @@ func nilValue(value any) bool {
 // successful acquisition that outlives its TTL or request deadline is rejected and
 // best-effort released.
 // An errored acquisition may have succeeded remotely; its key is left to expire.
-func (l *Locker) TryLock(ctx context.Context, key string, ttl time.Duration) (*Lease, error) {
+// Every error returns a nil Lease; success returns a non-nil handle.
+func (l *Locker) TryLock(ctx context.Context, key string, ttl time.Duration) (Lease, error) {
 	if key == "" {
 		return nil, ErrInvalidKey
 	}
@@ -146,7 +147,7 @@ func (l *Locker) TryLock(ctx context.Context, key string, ttl time.Duration) (*L
 
 // Lock retries contention until acquired or ctx is canceled. It does not retry
 // backend errors or turn an uncertain acquisition into a successful one.
-func (l *Locker) Lock(ctx context.Context, key string, ttl time.Duration) (*Lease, error) {
+func (l *Locker) Lock(ctx context.Context, key string, ttl time.Duration) (Lease, error) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {

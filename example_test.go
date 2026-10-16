@@ -77,7 +77,7 @@ func newExampleLocker(options ...anylock.Option) *anylock.Locker {
 
 // releaseExampleLease stops all lease workers before the example returns.
 // Cleanup needs its own live context, not the possibly canceled work context.
-func releaseExampleLease(lease *anylock.Lease) {
+func releaseExampleLease(lease anylock.Lease) {
 	cleanup, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := lease.Release(cleanup); err != nil {

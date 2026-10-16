@@ -432,9 +432,14 @@ func TestIntegrationPostgresCoreRejectsAcquisitionAfterTTLSpentWaiting(t *testin
 				t.Fatal(err)
 			}
 			const ttl = 80 * time.Millisecond
+			// This consumer needs only cleanup. Keep it compatible with both the
+			// workspace Lease interface and the published core pin's concrete handle.
+			type releaser interface {
+				Release(context.Context) error
+			}
 			type result struct {
 				executed bool
-				lease    *anylock.Lease
+				lease    releaser
 				err      error
 			}
 			finished := make(chan result, 1)
@@ -446,7 +451,12 @@ func TestIntegrationPostgresCoreRejectsAcquisitionAfterTTLSpentWaiting(t *testin
 						return nil
 					})
 				} else {
-					r.lease, r.err = locker.TryLock(f.ctx, "late", ttl)
+					handle, acquireErr := locker.TryLock(f.ctx, "late", ttl)
+					r.err = acquireErr
+					// A nil *Lease from the published core must not be boxed in releaser.
+					if handle != nil {
+						r.lease = handle
+					}
 				}
 				finished <- r
 			}()

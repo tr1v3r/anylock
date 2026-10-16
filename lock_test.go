@@ -98,19 +98,30 @@ func testLocker(t *testing.T, driver Driver, options ...Option) *Locker {
 	return locker
 }
 
-func testLease(t *testing.T, locker *Locker, key string) *Lease {
+// testConcreteLease preserves white-box worker/state assertions without calling
+// Done or Err, which could otherwise mask a broken independent expiry watcher.
+func testConcreteLease(t *testing.T, handle Lease) *lease {
+	t.Helper()
+	concrete, ok := handle.(*lease)
+	if !ok {
+		t.Fatalf("unexpected native lease implementation %T", handle)
+	}
+	return concrete
+}
+
+func testLease(t *testing.T, locker *Locker, key string) *lease {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	lease, err := locker.TryLock(ctx, key, time.Hour)
+	handle, err := locker.TryLock(ctx, key, time.Hour)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		cancel()
-		_ = lease.Release(context.Background())
+		_ = handle.Release(context.Background())
 	})
-	return lease
+	return testConcreteLease(t, handle)
 }
 
 func waitClosed(t *testing.T, channel <-chan struct{}) {
@@ -216,7 +227,7 @@ func TestLockWaitAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := make(chan struct{})
-	acquired := make(chan *Lease)
+	acquired := make(chan Lease)
 	go func() {
 		close(started)
 		lease, err := locker.Lock(context.Background(), "k", time.Hour)
@@ -263,8 +274,8 @@ func TestManualRenewAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancelScope()
-	waitClosed(t, other.done)
-	waitClosed(t, other.stopped)
+	waitClosed(t, testConcreteLease(t, other).done)
+	waitClosed(t, testConcreteLease(t, other).stopped)
 	if !errors.Is(other.Err(), context.Canceled) || !errors.Is(other.Err(), ErrLeaseLost) {
 		t.Fatal(other.Err())
 	}
