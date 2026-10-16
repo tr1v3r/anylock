@@ -59,7 +59,7 @@ func ExampleWithTable() {
 	db, _, cleanup := exampleDatabase()
 	defer cleanup()
 	// The schema must already exist. A bare table name uses public; the default
-	// is public.pkg_lock_leases. Each ASCII identifier is validated and quoted.
+	// is public.anylock_leases. Each ASCII identifier is validated and quoted.
 	d, err := postgresdriver.New(db, "myapp:", postgresdriver.WithTable("public.app_leases"))
 	fmt.Println("custom table ready:", d != nil, "error:", err)
 	// Output:

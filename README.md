@@ -118,7 +118,7 @@ func newPostgresLocker(ctx context.Context, db *sql.DB) (*anylock.Locker, error)
 ```
 
 `New` does not connect or create the table. `EnsureSchema` creates the default
-`public.pkg_lock_leases` table if absent; it does not validate/migrate an existing
+`public.anylock_leases` table if absent; it does not validate/migrate an existing
 table. Use `WithTable` for another table and see the [driver guide](driver/postgres/README.md)
 for schema, permissions and expiry cleanup. `EnsureSchema` may be omitted when the
 table is already provisioned; do not run concurrent startup DDL on every replica.

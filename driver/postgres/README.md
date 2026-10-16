@@ -32,7 +32,7 @@ func run(ctx context.Context) error {
     defer db.Close() // application-owned; normally shared until shutdown
 
     driver, err := postgresdriver.New(db, "myapp:gates:",
-        postgresdriver.WithTable("public.pkg_lock_leases")) // optional, default table
+        postgresdriver.WithTable("public.app_leases")) // optional; default is public.anylock_leases
     if err != nil {
         return err
     }
@@ -59,19 +59,20 @@ Both modes share keys: choose distinct prefixes/keys when their domains differ.
 
 ## Schema and ownership
 
-The default remains `public.pkg_lock_leases`, matching the original pkg driver.
-Keep the same database, table, and prefix across old/new clients during migration;
-different tables or namespaces are independent lock domains even for identical
-business keys. For a new deployment, a different table can be chosen explicitly
-with `WithTable("public.anylock_leases")`. `EnsureSchema` does not migrate data or
-provide a coordination cutover protocol; do not hot-switch an active lock domain.
+The default is `public.anylock_leases`. Different tables or namespaces are
+independent lock domains even for identical business keys: keep the same database,
+table, and prefix across all cooperating clients. A deployment whose table was
+created as `public.pkg_lock_leases` — the earlier default, kept to match the
+original pkg driver — stays in that domain by passing
+`WithTable("public.pkg_lock_leases")`; `EnsureSchema` does not migrate data or
+provide a coordination cutover protocol, so do not hot-switch an active lock domain.
 
 `New` does not connect, ping, run DDL, or close the pool. `EnsureSchema` explicitly
 executes `CREATE TABLE IF NOT EXISTS`; the schema must already exist. Equivalent
 migration for the default table:
 
 ```sql
-CREATE TABLE public.pkg_lock_leases (
+CREATE TABLE public.anylock_leases (
     key        text COLLATE pg_catalog."C" PRIMARY KEY,
     owner      text COLLATE pg_catalog."C" NOT NULL,
     expires_at timestamp with time zone NOT NULL
@@ -155,7 +156,7 @@ physically deleted. Unique, never-reused gate keys otherwise accumulate, so arra
 periodic cleanup, for example:
 
 ```sql
-DELETE FROM public.pkg_lock_leases
+DELETE FROM public.anylock_leases
 WHERE expires_at <= clock_timestamp();
 ```
 

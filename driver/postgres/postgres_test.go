@@ -146,7 +146,7 @@ func TestTableQualificationAndQuoting(t *testing.T) {
 	for _, tc := range []struct {
 		name, table, quoted string
 	}{
-		{"default", "", `"public"."pkg_lock_leases"`},
+		{"default", "", `"public"."anylock_leases"`},
 		{"unqualified", "leases", `"public"."leases"`},
 		{"qualified", "App.Leases_2", `"App"."Leases_2"`},
 		{"keyword", "select", `"public"."select"`},
