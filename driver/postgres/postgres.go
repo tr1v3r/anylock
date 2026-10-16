@@ -39,8 +39,9 @@ ON CONFLICT (key) DO UPDATE
 SET owner = EXCLUDED.owner, expires_at = pg_catalog.clock_timestamp() + $3::pg_catalog.interval
 WHERE existing.expires_at <= pg_catalog.clock_timestamp()`
 
-// The outer predicates deliberately use held's columns: MATERIALIZED prevents
-// them from being pushed below FOR UPDATE and evaluated before a row-lock wait.
+// Check held's owner and expiry only after FOR UPDATE returns the locked row.
+// Keep the expiry predicate outside the CTE so it runs after any lock wait.
+// MATERIALIZED makes the boundary explicit; FOR UPDATE also prevents inlining.
 const renewSQL = `WITH held AS MATERIALIZED (
     SELECT key, owner, expires_at FROM %s WHERE key = $1 FOR UPDATE
 )
