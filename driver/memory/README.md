@@ -58,10 +58,13 @@ platform's monotonic-clock behavior (notably system sleep) remain relevant.
 `TryAcquire` creates an absent/expired lease, but returns `false, nil` for any live
 lease, **including the same owner**. `Renew` resets only the matching live owner's
 TTL from the current operation; a shorter TTL may shorten ownership. It never
-creates or revives an expired lease. `Release` removes only a matching live lease.
-Absent, expired, or wrong-owner renewals/releases return `false, nil`; a stale owner
-cannot affect its successor. A repeated direct driver release returns false,
-unlike successful core `Lease.Release` calls, which are locally idempotent.
+creates or revives an expired lease. `Release` deletes a stored record only when
+its owner matches, without requiring remaining validity. Operations sweep expired
+entries first, so an expired record may already be absent. Renew returns
+`false, nil` for absent, expired, or wrong-owner records; Release returns
+`false, nil` if no matching record remains. A stale owner cannot affect its successor. The driver
+bool reports an owner-checked deletion, not prior validity. Core `Lease.Release`
+treats a missing/successor-owned record as successful, idempotent cleanup.
 
 Keys and owners must be nonempty; other Go string bytes, including NUL and invalid
 UTF-8, are accepted without normalization. Acquire/renew require positive TTLs.

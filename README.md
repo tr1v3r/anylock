@@ -33,7 +33,7 @@ The core and every driver have the same cooperative safety limits described
 | --- | --- | --- | --- |
 | [memory](driver/memory/README.md) | Core and standard library only; no external service, connection or driver worker. Only callers sharing one Driver instance coordinate. | A context-selectable gate protects a map and indexed min-heap. Monotonic-clock TTLs have nanosecond precision; operations sweep expired entries, so idle entries can remain allocated. | Tests, local tools and coordination between goroutines in one process. Separate instances/processes and restarts have independent state. |
 | [Redis](driver/redis/README.md) | Core, go-redis and a shared Redis service; callers own the client. Configure context and socket deadlines. | Acquire uses `SET NX PX`; Lua checks the owner before renewal/deletion. Redis expires keys; TTLs round up to milliseconds. | Cross-process TTL gates and leases when Redis is already available. Network latency and asynchronous failover remain part of the safety model. |
-| [PostgreSQL](driver/postgres/README.md) | Core and `database/sql` in production, a caller-chosen SQL adapter (for example pgx), and a shared permanent table. PostgreSQL 12+ syntax; caller owns the pool. | Acquire uses an UPSERT. Renewal/release lock the row before checking owner and expiry. Database-clock TTLs round up to microseconds; callers clean up unused expired rows. | Cross-process coordination backed by an existing PostgreSQL database, with provisioned schema and capacity for SQL traffic/row contention. Leases do not make protected business writes transactional. |
+| [PostgreSQL](driver/postgres/README.md) | Core and `database/sql` in production, a caller-chosen SQL adapter (for example pgx), and a shared permanent table. PostgreSQL 12+ syntax; caller owns the pool. | Acquire uses an UPSERT. Renewal locks before checking owner and expiry; release directly deletes owner-matched rows, even if expired. Database-clock TTLs round up to microseconds; callers clean up unreleased expired rows. | Cross-process coordination backed by an existing PostgreSQL database, with provisioned schema and capacity for SQL traffic/row contention. Leases do not make protected business writes transactional. |
 
 Backend clients/simulators used in driver tests stay in their own modules; they
 are not dependencies of the core. See [module boundaries](MODULES.md).
@@ -304,10 +304,12 @@ type Lease interface {
 - `Lease.Deadline()`: conservative local deadline, measured from before the
   acquisition/renewal request, not from its response. It is not ownership proof.
 - `Lease.Release(ctx)`: closes the local handle even if cleanup fails; stops its
-  workers before owner-checked remote cleanup. Successful release is idempotent;
-  missing/successor-owned keys return `ErrLeaseLost`. Failed cleanup can be retried
-  with another context, but the handle can never renew again. `ErrClosed` denotes
-  local closure, not proof of successful remote deletion; check Release's result.
+  workers before owner-checked remote cleanup, including expired records that
+  remain stored. Cleanup is idempotent: missing/successor-owned records are
+  successful no-ops. Backend/context errors remain errors and cleanup can be
+  retried with another live context, but the handle can never renew again or reset
+  its first terminal cause. A nil result is not proof of prior ownership/validity;
+  `ErrClosed` denotes local closure, not proof that a remote record was deleted.
 
 ```text
 [Fixed-TTL execution: TryRun / Run]
@@ -328,7 +330,7 @@ type Lease interface {
 
 [Release]
   close local handle -> cancel requests -> wait for workers (caller-context bounded)
-                     -> owner-checked Driver.Release -> success / lost / uncertain
+                     -> owner-checked Driver.Release -> deleted / no-op / uncertain
 ```
 
 Each lease has one expiry/cancellation watcher; opt-in automatic renewal adds one
@@ -375,10 +377,14 @@ type Driver interface {
 
 Drivers must be concurrent-safe and honor operation deadlines. Acquisition of an
 absent/expired key, owner-checked renewal, and owner-checked release must each be
-atomic. Expired owners cannot revive; stale owners cannot touch successors. TTLs
-must not be rounded down. False is contention/lost ownership; errors are failures
-with potentially ambiguous outcomes. A file driver needs real cross-process
-atomic coordination and expiration checks; plain file read/write is insufficient.
+atomic. Renew requires a live owner and cannot revive expired leases. Release
+checks owner, not expiry, and may delete an expired record that remains stored;
+stale owners cannot touch successors. TTLs must not be rounded down. False means
+contention/lost ownership for acquire/renew, or no matching stored record for
+release. Release's bool reports deletion, not prior validity; expired records may
+already have been reclaimed. Errors are failures with potentially ambiguous
+outcomes. A file driver needs real cross-process atomic coordination and
+expiration checks for acquisition/renewal; plain file read/write is insufficient.
 
 The Redis driver uses one `SET ... NX PX ...`, and Lua owner-check-plus-`PEXPIRE`
 or owner-check-plus-`DEL`. Sub-millisecond TTLs round up, never down. Prefixes are

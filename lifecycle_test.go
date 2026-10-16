@@ -31,8 +31,11 @@ func TestLifecycleDefaultExpiryWithoutRenewal(t *testing.T) {
 		if err := lease.Renew(context.Background()); !errors.Is(err, ErrLeaseLost) {
 			t.Fatal("expired lease revived", err)
 		}
-		if err := lease.Release(context.Background()); !errors.Is(err, ErrLeaseLost) {
-			t.Fatal(err)
+		if err := lease.Release(context.Background()); err != nil {
+			t.Fatal("expired lease cleanup failed", err)
+		}
+		if !errors.Is(lease.Err(), ErrLeaseLost) {
+			t.Fatal("cleanup changed expired lease cause", lease.Err())
 		}
 	})
 }

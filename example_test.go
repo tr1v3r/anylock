@@ -60,7 +60,7 @@ func (d *exampleDriver) Release(ctx context.Context, key, owner string) (bool, e
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	record, ok := d.records[key]
-	if !ok || record.owner != owner || !time.Now().Before(record.deadline) {
+	if !ok || record.owner != owner {
 		return false, nil
 	}
 	delete(d.records, key)

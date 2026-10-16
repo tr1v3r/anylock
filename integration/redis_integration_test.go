@@ -115,8 +115,14 @@ func TestIntegrationRedisLeaseLifecycle(t *testing.T) {
 	if !errors.Is(lease.Err(), anylock.ErrLeaseLost) || lease.Context().Err() == nil {
 		t.Fatal("lost lease/work context still live", lease.Err())
 	}
-	if staleErr := lease.Release(ctx); !errors.Is(staleErr, anylock.ErrLeaseLost) {
-		t.Fatal("stale cleanup should report lost ownership", staleErr)
+	// The independently pinned published core reports ErrLeaseLost for this
+	// no-op; workspace core treats it as successful cleanup. The root package
+	// strictly tests the new nil result, while both modes must protect successors.
+	if staleErr := lease.Release(ctx); staleErr != nil && !errors.Is(staleErr, anylock.ErrLeaseLost) {
+		t.Fatal("stale cleanup failed", staleErr)
+	}
+	if !errors.Is(lease.Err(), anylock.ErrLeaseLost) {
+		t.Fatal("cleanup reset terminal cause", lease.Err())
 	}
 	value, err := client.Get(ctx, prefix+"auto").Result()
 	if err != nil || value != "successor" {

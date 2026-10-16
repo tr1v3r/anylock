@@ -98,6 +98,15 @@ func (f *postgresFixture) row(t *testing.T, key string) (string, time.Time) {
 	return owner, expires
 }
 
+func (f *postgresFixture) requireAbsent(t *testing.T, key string) {
+	t.Helper()
+	var owner string
+	err := f.db.QueryRowContext(f.ctx, `SELECT owner FROM `+f.quotedTable()+` WHERE key = $1`, f.prefix+key).Scan(&owner)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("key %q still present: owner=%q, error=%v; want sql.ErrNoRows", key, owner, err)
+	}
+}
+
 func waitPostgres(t *testing.T, ctx context.Context, description string, ready func() (bool, error)) {
 	t.Helper()
 	ticker := time.NewTicker(5 * time.Millisecond)
@@ -165,12 +174,17 @@ func TestIntegrationPostgresOwnershipAndExpiry(t *testing.T) {
 	f.waitExpired(t, expires)
 	ok, err = first.Renew(f.ctx, "key", "old", time.Hour)
 	requireResult(t, false, ok, err)
-	ok, err = first.Release(f.ctx, "key", "old")
-	requireResult(t, false, ok, err)
 	owner, unchanged := f.row(t, "key")
 	if owner != "old" || !unchanged.Equal(expires) {
-		t.Fatal("expired owner revived or changed expired row", owner, unchanged)
+		t.Fatal("Renew revived or changed expired row", owner, unchanged)
 	}
+	ok, err = first.Release(f.ctx, "key", "other")
+	requireResult(t, false, ok, err)
+	ok, err = first.Release(f.ctx, "key", "old")
+	requireResult(t, true, ok, err)
+	f.requireAbsent(t, "key")
+	ok, err = first.Release(f.ctx, "key", "old")
+	requireResult(t, false, ok, err)
 	ok, err = second.TryAcquire(f.ctx, "key", "successor", time.Second)
 	requireResult(t, true, ok, err)
 	_, successorExpiry := f.row(t, "key")
@@ -302,7 +316,7 @@ func (f *postgresFixture) waitBlocked(t *testing.T, blockerPID int) time.Time {
 	return queryStarted
 }
 
-func TestIntegrationPostgresExpiryRecheckedAfterRowLockWait(t *testing.T) {
+func TestIntegrationPostgresExpiryDuringRowLockWait(t *testing.T) {
 	for _, name := range []string{"renew", "release"} {
 		t.Run(name, func(t *testing.T) {
 			f := realPostgres(t)
@@ -337,18 +351,30 @@ func TestIntegrationPostgresExpiryRecheckedAfterRowLockWait(t *testing.T) {
 			}
 			select {
 			case r := <-finished:
-				requireResult(t, false, r.ok, r.err)
+				requireResult(t, name == "release", r.ok, r.err)
 			case <-f.ctx.Done():
 				t.Fatal(f.ctx.Err())
 			}
-			owner, unchanged := f.row(t, "blocked")
-			if owner != "owner" || !unchanged.Equal(expires) {
-				t.Fatal("post-expiry waiter renewed/deleted lease", owner, unchanged)
+			if name == "renew" {
+				// Only renewal needs fresh clock_timestamp after the lock wait:
+				// transaction/statement-start clocks would revive this row.
+				owner, unchanged := f.row(t, "blocked")
+				if owner != "owner" || !unchanged.Equal(expires) {
+					t.Fatal("post-expiry waiter renewed lease", owner, unchanged)
+				}
+			} else {
+				// Cleanup still deletes its own row after the wait consumes TTL.
+				f.requireAbsent(t, "blocked")
+				ok, err := f.driver.Release(f.ctx, "blocked", "owner")
+				requireResult(t, false, ok, err)
 			}
-			// CURRENT_TIMESTAMP/transaction_timestamp are fixed before the wait;
-			// only clock_timestamp at the locked-row decision can reject expiry.
 			ok, err := f.driver.TryAcquire(f.ctx, "blocked", "successor", time.Second)
 			requireResult(t, true, ok, err)
+			ok, err = f.driver.Release(f.ctx, "blocked", "owner")
+			requireResult(t, false, ok, err)
+			ok, err = f.driver.Release(f.ctx, "blocked", "successor")
+			requireResult(t, true, ok, err)
+			f.requireAbsent(t, "blocked")
 		})
 	}
 }
@@ -369,9 +395,9 @@ func TestIntegrationPostgresWaiterRechecksCommittedSuccessor(t *testing.T) {
 				t.Fatal(queryErr)
 			}
 			var successorExpiry time.Time
-			// An external UPDATE is only a test fixture to exercise EvalPlanQual:
-			// the waiter initially sees old, but must decide on committed new.
-			if err := tx.QueryRowContext(f.ctx, `UPDATE `+f.quotedTable()+` SET owner = $2, expires_at = clock_timestamp() + interval '5 seconds' WHERE key = $1 RETURNING expires_at`, f.prefix+"successor", "new").Scan(&successorExpiry); err != nil {
+			// Lock the unchanged old row first. Install the successor only after
+			// observing the waiter, so its initial snapshot definitely sees old.
+			if err := tx.QueryRowContext(f.ctx, `SELECT expires_at FROM `+f.quotedTable()+` WHERE key = $1 FOR UPDATE`, f.prefix+"successor").Scan(&successorExpiry); err != nil {
 				t.Fatal(err)
 			}
 			type result struct {
@@ -393,6 +419,11 @@ func TestIntegrationPostgresWaiterRechecksCommittedSuccessor(t *testing.T) {
 				finished <- result{ok, err}
 			}()
 			f.waitBlocked(t, blockerPID)
+			// External UPDATE is fixture-only: EvalPlanQual must recheck the
+			// committed successor owner, not delete based on the old snapshot.
+			if err := tx.QueryRowContext(f.ctx, `UPDATE `+f.quotedTable()+` SET owner = $2, expires_at = clock_timestamp() + interval '5 seconds' WHERE key = $1 RETURNING expires_at`, f.prefix+"successor", "new").Scan(&successorExpiry); err != nil {
+				t.Fatal(err)
+			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}

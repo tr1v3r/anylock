@@ -54,7 +54,7 @@ func (d *memoryDriver) Release(ctx context.Context, key, owner string) (bool, er
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	record, ok := d.records[key]
-	if !ok || record.owner != owner || !time.Now().Before(record.deadline) {
+	if !ok || record.owner != owner {
 		return false, nil
 	}
 	delete(d.records, key)
@@ -349,9 +349,12 @@ func TestLocalExpiryAndStaleHandleCannotReleaseSuccessor(t *testing.T) {
 	driver.mu.Unlock()
 	second := testLease(t, locker, "k")
 	for range 2 {
-		if err := first.Release(context.Background()); !errors.Is(err, ErrLeaseLost) {
-			t.Fatal(err)
+		if err := first.Release(context.Background()); err != nil {
+			t.Fatal("stale handle cleanup failed", err)
 		}
+	}
+	if !errors.Is(first.Err(), ErrLeaseLost) {
+		t.Fatal("cleanup changed lost lease cause", first.Err())
 	}
 	if second.Err() != nil {
 		t.Fatal("successor invalidated")

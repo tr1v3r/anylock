@@ -20,10 +20,14 @@ import (
 // every call must settle by its deadline (apart from scheduling delays).
 //
 // Every acquisition uses a fresh, unguessable owner. TryAcquire must atomically
-// create an absent/expired lease with that owner and a positive TTL. Renew and
-// Release must atomically check the owner and require an unexpired lease; an old
-// owner must never extend or remove a successor's lease. False means contention
-// or lost ownership, not a backend failure. Errors may have ambiguous outcomes.
+// create an absent/expired lease with that owner and a positive TTL. Renew must
+// atomically check the owner and require an unexpired lease. Release atomically
+// deletes a stored record only when its owner matches, even if it has expired;
+// an old owner must never extend or remove a successor's lease. Its bool reports
+// whether the owner-checked deletion removed a record, not prior lease validity.
+// Expired records may already have been reclaimed. False is not a backend failure:
+// it means contention/lost ownership for acquire/renew, or no matching record for
+// release. Errors may have ambiguous outcomes.
 //
 // TTL is measured by the backend; it must not be rounded down. Clock jumps,
 // backend failover, pauses, and partitions remain part of the backend's safety

@@ -105,16 +105,25 @@ CREATE TABLE public.anylock_leases (
     live row -> false (including same owner)
     expired row -> lock conflict row -> check DB clock -> install fresh owner/TTL
 
-[Renew / release]
+[Renew]
   MATERIALIZED held-row CTE -> SELECT ... FOR UPDATE (key only)
     -> check held.owner AND held.expires_at against current DB clock
-    -> extend / delete, or false for absent/expired/successor-owned rows
+    -> extend, or false for absent/expired/successor-owned rows
+
+[Release]
+  DELETE ... WHERE key = $1 AND owner = $2
+    matching row -> delete, true (even after expiry or a row-lock wait)
+    absent / wrong owner -> no-op, false
+    owner changes during a row-lock wait -> recheck owner, protect successor
 ```
 
 Checking expiry in a plain `UPDATE ... WHERE expires_at > clock_timestamp()` can
-happen **before** waiting for a row lock. The materialized CTE deliberately checks
-its locked row's values **after** that wait, including updated successor ownership.
-Do not replace it with an unlocked read or a pre-lock expiry filter.
+happen **before** waiting for a row lock. Renewal's materialized CTE deliberately
+checks its locked row's values **after** that wait, including updated successor
+ownership. Do not replace it with an unlocked read or a pre-lock expiry filter.
+Release is cleanup, not a validity check: its single atomic owner-checked `DELETE`
+does not inspect expiry. Its bool reports whether a matching row was actually
+deleted; `false, nil` means no matching row, not a backend error.
 
 Expiry uses `pg_catalog.clock_timestamp()`, not transaction-start `now()`.
 Positive TTLs round **up** to microseconds and bind as exact integer hour/minute/
@@ -152,8 +161,9 @@ long-lived `*sql.Tx`.
 ## Expired-row maintenance
 
 Expiry is logical: expired rows cannot renew or block new acquisition even if not
-physically deleted. Unique, never-reused gate keys otherwise accumulate, so arrange
-periodic cleanup, for example:
+physically deleted. Explicit owner-matched Release removes its row, including after
+expiry. Gates never release their markers; unique, never-reused gate keys otherwise
+accumulate, so arrange periodic cleanup, for example:
 
 ```sql
 DELETE FROM public.anylock_leases
@@ -227,7 +237,8 @@ variable is needed for these mandatory regressions:
 | --- | --- |
 | Same-key acquisition | Separate 64, 256, and 1024-contender waves, each with unique owners and exactly one winner matching the stored row. |
 | Concurrent mixed churn | Hot key and 16-key profiles, each 32 workers × 16 seeded iterations; acquire, live-owner renew/release, and retired/rejected-owner probes run concurrently. No overlapping tracked long-TTL holders, no stale mutation, and no leftover rows. |
-| Expiry takeover | Three server-clock-controlled same-key expiry phases, each followed by a 64-contender wave. A separate batch expires 64 keys, then starts 128 fresh acquisition contenders plus 128 expired-owner renew/release attacks together; exactly one winner per key and no predecessor mutation. |
+| Expiry takeover | Three server-clock-controlled same-key expiry phases, each followed by a 64-contender wave. A separate batch expires 64 keys, then starts 128 fresh acquisition contenders plus 128 expired-owner renew/release calls together; expired renewal is rejected, cleanup may remove only its predecessor row, and exactly one successor wins per key. |
+| Release cleanup | 64 concurrent releases of one expired own row delete it exactly once; absent cleanup is a no-op, a fresh 64-contender wave reacquires, and stale cleanup preserves its successor. Row-lock regressions also verify expired-own deletion after waiting and successor protection when owner changes while queued. |
 | Cancellation/pool wait | 256 concurrent mixed requests: 128 pre-canceled, 128 observed queued behind one checked-out connection before cancellation; no ownership claim or row mutation, pool remains usable. |
 
 These are **contender goroutines**, not 1024 PostgreSQL connections. Each fixture

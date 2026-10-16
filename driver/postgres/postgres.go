@@ -8,10 +8,11 @@
 // expired rows are logically absent and need not be deleted before acquisition.
 // Maintenance/cleanup of unused expired rows is the caller's responsibility.
 //
-// Mutations are single atomic statements. Renewal/release lock the row before
-// checking its owner and expiry, so waiting for a row lock cannot revive an
-// expired lease. TTLs round up to microseconds. The driver does not start workers,
-// close connections, strengthen database failover guarantees, or provide fencing.
+// Mutations are single atomic statements. Renewal checks owner and fresh expiry
+// after locking the row, so a row-lock wait cannot revive an expired lease.
+// Release deletes a matching owner's row regardless of expiry; its atomic owner
+// check protects successors. TTLs round up to microseconds. The driver does not
+// start workers, close connections, strengthen failover guarantees, or provide fencing.
 package postgres
 
 import (
@@ -48,11 +49,7 @@ SET expires_at = pg_catalog.clock_timestamp() + $3::pg_catalog.interval
 FROM held
 WHERE target.key = held.key AND held.owner = $2 AND held.expires_at > pg_catalog.clock_timestamp()`
 
-const releaseSQL = `WITH held AS MATERIALIZED (
-    SELECT key, owner, expires_at FROM %s WHERE key = $1 FOR UPDATE
-)
-DELETE FROM %[1]s AS target USING held
-WHERE target.key = held.key AND held.owner = $2 AND held.expires_at > pg_catalog.clock_timestamp()`
+const releaseSQL = `DELETE FROM %s WHERE key = $1 AND owner = $2`
 
 // Driver implements anylock.Driver over a shared permanent PostgreSQL table.
 // Construct it with New; its zero value is not usable. It is safe for concurrent
@@ -146,8 +143,9 @@ func (d *Driver) Renew(ctx context.Context, key, owner string, ttl time.Duration
 	return d.exec(ctx, "renew", fmt.Sprintf(renewSQL, d.table), d.prefix+key, owner, interval)
 }
 
-// Release atomically deletes only the unexpired matching owner's row. Expired,
-// absent and successor-owned rows return false and are not removed.
+// Release atomically deletes a matching owner's row, even after expiry. True
+// means a row was deleted; absent or successor-owned rows return false, nil.
+// The owner check also protects successors installed during a row-lock wait.
 func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 	if err := d.validate(ctx, key, owner); err != nil {
 		return false, err

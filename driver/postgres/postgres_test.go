@@ -195,6 +195,45 @@ func TestPrefixKeyAndOwnerAreBoundParameters(t *testing.T) {
 	}
 }
 
+func TestReleaseUsesOnlyAtomicKeyAndOwnerDelete(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows int64
+	}{
+		{"matching live row", 1},
+		{"matching expired row", 1},
+		{"absent row", 0},
+		{"wrong owner", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, mock := mockDriver(t, "cleanup:", WithTable("App.Leases"))
+			// Exact SQL forbids both an expiry filter and a held-row CTE. Row
+			// state is supplied by the mock; real-server tests verify its meaning.
+			query := `DELETE FROM "App"."Leases" WHERE key = $1 AND owner = $2`
+			mock.ExpectExec("^"+regexp.QuoteMeta(query)+"$").
+				WithArgs("cleanup:key", "owner").WillReturnResult(sqlmock.NewResult(0, tc.rows))
+			ok, err := d.Release(testContext, "key", "owner")
+			requireResult(t, tc.rows == 1, ok, err)
+		})
+	}
+}
+
+func TestRenewLocksBeforeCheckingFreshExpiry(t *testing.T) {
+	d, mock := mockDriver(t, "")
+	query := `WITH held AS MATERIALIZED (
+    SELECT key, owner, expires_at FROM "public"."anylock_leases" WHERE key = $1 FOR UPDATE
+)
+UPDATE "public"."anylock_leases" AS target
+SET expires_at = pg_catalog.clock_timestamp() + $3::pg_catalog.interval
+FROM held
+WHERE target.key = held.key AND held.owner = $2 AND held.expires_at > pg_catalog.clock_timestamp()`
+	mock.ExpectExec("^"+regexp.QuoteMeta(query)+"$").
+		WithArgs("key", "owner", "0 hours 0 minutes 1 seconds 0 microseconds").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	ok, err := d.Renew(testContext, "key", "owner", time.Second)
+	requireResult(t, false, ok, err)
+}
+
 func TestTTLUsesExactCeilingMicrosecondStrings(t *testing.T) {
 	for _, tc := range []struct {
 		ttl  time.Duration

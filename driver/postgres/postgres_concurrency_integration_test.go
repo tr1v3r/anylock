@@ -116,6 +116,63 @@ func TestIntegrationPostgresConcurrentExpiryTakeovers(t *testing.T) {
 	}
 }
 
+func TestIntegrationPostgresConcurrentExpiredOwnerCleanup(t *testing.T) {
+	f := realPostgres(t)
+	const key = "expired-cleanup"
+	ok, err := f.driver.TryAcquire(f.ctx, key, "expired-owner", 40*time.Millisecond)
+	requireResult(t, true, ok, err)
+	_, expires := f.row(t, key)
+	f.waitExpired(t, expires)
+
+	const contenders = 64
+	type result struct {
+		ok  bool
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan result, contenders)
+	var ready, workers sync.WaitGroup
+	for range contenders {
+		ready.Add(1)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			ready.Done()
+			<-start
+			removed, cleanupErr := f.driver.Release(f.ctx, key, "expired-owner")
+			results <- result{removed, cleanupErr}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	workers.Wait()
+	close(results)
+	deleted := 0
+	for result := range results {
+		if result.err != nil {
+			t.Error(result.err)
+		}
+		if result.ok {
+			deleted++
+		}
+	}
+	if deleted != 1 {
+		t.Fatalf("expired row deleted %d times; want exactly one", deleted)
+	}
+	f.requireAbsent(t, key)
+	ok, err = f.driver.Release(f.ctx, key, "expired-owner")
+	requireResult(t, false, ok, err)
+	winner := postgresAcquisitionWave(t, f, key, "after-cleanup", contenders)
+	ok, err = f.driver.Release(f.ctx, key, "expired-owner")
+	requireResult(t, false, ok, err)
+	if owner, _ := f.row(t, key); owner != winner {
+		t.Fatal("expired owner cleanup removed successor", owner, winner)
+	}
+	ok, err = f.driver.Release(f.ctx, key, winner)
+	requireResult(t, true, ok, err)
+	f.requireAbsent(t, key)
+}
+
 func TestIntegrationPostgresManyExpiredKeys(t *testing.T) {
 	f := realPostgres(t)
 	const keys = 64
@@ -173,11 +230,15 @@ func TestIntegrationPostgresManyExpiredKeys(t *testing.T) {
 			t.Error(result.err)
 		}
 		if result.ok {
-			if result.operation >= 2 {
-				t.Errorf("expired predecessor mutated batch key %d with operation %d", result.index, result.operation)
-			} else {
+			switch result.operation {
+			case 0, 1:
 				winners[result.index] = result.owner
 				counts[result.index]++
+			case 2:
+				t.Errorf("expired predecessor renewed batch key %d", result.index)
+			case 3:
+				// Cleanup may delete the predecessor before takeover, but the
+				// atomic owner CAS must leave the eventual winner intact.
 			}
 		}
 	}
