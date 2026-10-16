@@ -29,7 +29,7 @@ func TestAutomaticRenewMinimumToolchain(t *testing.T) {
 	defer lease.Release(context.Background())
 	select {
 	case <-renewed:
-	case <-lease.done:
+	case <-testConcreteLease(t, lease).done:
 		t.Fatal("lease invalidated before automatic renewal", lease.Err())
 	case <-ctx.Done():
 		t.Fatal("automatic renewal did not run", ctx.Err())
@@ -41,7 +41,7 @@ func TestAutomaticRenewMinimumToolchain(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitClosed(t, lease.Context().Done())
-	waitClosed(t, lease.stopped)
+	waitClosed(t, testConcreteLease(t, lease).stopped)
 }
 
 func TestDefaultExpiryMinimumToolchain(t *testing.T) {
@@ -49,8 +49,8 @@ func TestDefaultExpiryMinimumToolchain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitClosed(t, lease.done)
-	waitClosed(t, lease.stopped)
+	waitClosed(t, testConcreteLease(t, lease).done)
+	waitClosed(t, testConcreteLease(t, lease).stopped)
 	if !errors.Is(lease.Err(), ErrLeaseLost) {
 		t.Fatal(lease.Err())
 	}

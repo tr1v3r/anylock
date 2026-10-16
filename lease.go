@@ -8,14 +8,60 @@ import (
 	"time"
 )
 
-// Lease is a single-use, time-bounded ownership handle. It is safe for concurrent
-// use and must not be copied. Release stops its worker; otherwise expiry or the
-// acquisition context's cancellation does so. A lost/closed handle cannot revive.
+// Lease is a single-use, time-bounded ownership handle. Implementations must be
+// safe for concurrent use. A lost or closed handle must never become valid again.
+// Copying an interface value does not create another acquisition.
 //
+// Lock and TryLock return a non-nil Lease on success and nil on any error. Their
+// handles retain the acquisition Driver and observe expiry and acquisition-context
+// cancellation independently of renewal I/O. Cancellation does not automatically
+// release remote ownership. Implementations and wrappers must preserve these
+// guarantees and the method contracts below.
+type Lease interface {
+	// Key returns the logical key, without any driver's namespace prefix.
+	Key() string
+
+	// Context returns a context canceled on local lease invalidation. Pass it to
+	// cooperative protected work; use Err for the terminal lease cause. Its Deadline
+	// is inherited from the caller, not the renewable local validity deadline.
+	Context() context.Context
+
+	// Deadline returns the conservative local validity deadline. It is not proof of
+	// ownership: a backend can lose data or ownership before this deadline.
+	Deadline() time.Time
+
+	// Done closes permanently on expiry, lost ownership, renewal failure, context
+	// cancellation, or a Release attempt. It signals LOCAL invalidation, not proof
+	// that the remote key was deleted. Stop protected work when it closes.
+	Done() <-chan struct{}
+
+	// Err is nil while locally valid. It returns ErrClosed after a Release attempt,
+	// ErrLeaseLost on expiry/ownership loss, and joins ErrLeaseLost with backend or
+	// context errors on failure. The first terminal cause is retained permanently.
+	Err() error
+
+	// Renew extends ownership by the original TTL. It serializes with other Renew
+	// and Release calls. Any failure AFTER calling the driver invalidates the handle,
+	// even when the backend outcome is uncertain. A canceled wait makes no request
+	// and does not itself abandon a still-valid lease. A successful reply received
+	// after the request deadline or cancellation also invalidates the handle.
+	Renew(ctx context.Context) error
+
+	// Release permanently closes the local handle and stops its worker BEFORE
+	// releasing remote ownership. An expired/lost handle may still try owner-checked
+	// cleanup. Use a live cleanup context, not a canceled acquisition context.
+	//
+	// Successful releases are idempotent. A missing/successor-owned key returns
+	// ErrLeaseLost. Backend/context errors may leave the key until its TTL; Release
+	// can be retried with another context, but Renew can never restart this handle.
+	Release(ctx context.Context) error
+}
+
+// lease is Locker's shared implementation of Lease and must not be copied.
 // Each lease has an independent expiry/cancellation watcher. Automatic renewal
 // adds a second worker, so a slow backend cannot delay Done. The Driver must
 // honor operation deadlines so in-flight requests and shutdown remain bounded.
-type Lease struct {
+type lease struct {
 	driver           Driver
 	key              string
 	owner            string
@@ -41,9 +87,11 @@ type Lease struct {
 	releaseError error
 }
 
-func newLease(ctx context.Context, locker *Locker, key, owner string, ttl time.Duration, deadline time.Time) *Lease {
+var _ Lease = (*lease)(nil)
+
+func newLease(ctx context.Context, locker *Locker, key, owner string, ttl time.Duration, deadline time.Time) *lease {
 	ctx, cancel := context.WithCancel(ctx)
-	l := &Lease{
+	l := &lease{
 		driver: locker.driver, key: key, owner: owner, ttl: ttl, auto: locker.autoRenew,
 		operationTimeout: locker.operationTimeout,
 		ctx:              ctx, cancel: cancel, deadline: deadline,
@@ -57,16 +105,16 @@ func newLease(ctx context.Context, locker *Locker, key, owner string, ttl time.D
 }
 
 // Key returns the logical key, without any driver's namespace prefix.
-func (l *Lease) Key() string { return l.key }
+func (l *lease) Key() string { return l.key }
 
 // Context returns a context canceled on local lease invalidation. Pass it to
 // cooperative protected work; use Err for the terminal lease cause. Its Deadline
 // is inherited from the caller, not the renewable local validity deadline.
-func (l *Lease) Context() context.Context { return l.ctx }
+func (l *lease) Context() context.Context { return l.ctx }
 
 // Deadline returns the conservative local validity deadline. It is not proof of
 // ownership: a backend can lose data or ownership before this deadline.
-func (l *Lease) Deadline() time.Time {
+func (l *lease) Deadline() time.Time {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.deadline
@@ -75,7 +123,7 @@ func (l *Lease) Deadline() time.Time {
 // Done closes permanently on expiry, lost ownership, renewal failure, context
 // cancellation, or a Release attempt. It signals LOCAL invalidation, not proof
 // that the remote key was deleted. Stop protected work when it closes.
-func (l *Lease) Done() <-chan struct{} {
+func (l *lease) Done() <-chan struct{} {
 	_ = l.Err()
 	return l.done
 }
@@ -83,13 +131,13 @@ func (l *Lease) Done() <-chan struct{} {
 // Err is nil while locally valid. It returns ErrClosed after a Release attempt,
 // ErrLeaseLost on expiry/ownership loss, and joins ErrLeaseLost with backend or
 // context errors on failure. The first terminal cause is retained permanently.
-func (l *Lease) Err() error {
+func (l *lease) Err() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.stateLocked()
 }
 
-func (l *Lease) stateLocked() error {
+func (l *lease) stateLocked() error {
 	if l.err == nil {
 		if err := l.ctx.Err(); err != nil {
 			_ = l.finishLocked(errors.Join(ErrLeaseLost, err))
@@ -100,7 +148,7 @@ func (l *Lease) stateLocked() error {
 	return l.err
 }
 
-func (l *Lease) finishLocked(err error) error {
+func (l *lease) finishLocked(err error) error {
 	if l.err == nil {
 		l.err = err
 		close(l.done)
@@ -109,13 +157,13 @@ func (l *Lease) finishLocked(err error) error {
 	return l.err
 }
 
-func (l *Lease) finish(err error) error {
+func (l *lease) finish(err error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.finishLocked(err)
 }
 
-func (l *Lease) enter(ctx context.Context, checkLease bool) error {
+func (l *lease) enter(ctx context.Context, checkLease bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -137,14 +185,14 @@ func (l *Lease) enter(ctx context.Context, checkLease bool) error {
 	}
 }
 
-func (l *Lease) leave() { l.gate <- struct{}{} }
+func (l *lease) leave() { l.gate <- struct{}{} }
 
 // Renew extends ownership by the original TTL. It serializes with other Renew
 // and Release calls. Any failure AFTER calling the driver invalidates the handle,
 // even when the backend outcome is uncertain. A canceled wait makes no request
 // and does not itself abandon a still-valid lease. A successful reply received
 // after the request deadline or cancellation also invalidates the handle.
-func (l *Lease) Renew(ctx context.Context) error {
+func (l *lease) Renew(ctx context.Context) error {
 	if err := l.enter(ctx, true); err != nil {
 		return err
 	}
@@ -206,7 +254,7 @@ func (l *Lease) Renew(ctx context.Context) error {
 // Successful releases are idempotent. A missing/successor-owned key returns
 // ErrLeaseLost. Backend/context errors may leave the key until its TTL; Release
 // can be retried with another context, but Renew can never restart this handle.
-func (l *Lease) Release(ctx context.Context) error {
+func (l *lease) Release(ctx context.Context) error {
 	l.mu.Lock()
 	_ = l.stateLocked()
 	_ = l.finishLocked(ErrClosed)
@@ -236,7 +284,7 @@ func (l *Lease) Release(ctx context.Context) error {
 	return l.releaseError
 }
 
-func (l *Lease) run() {
+func (l *lease) run() {
 	defer close(l.stopped)
 	if l.auto {
 		go func() {
@@ -250,7 +298,7 @@ func (l *Lease) run() {
 	}
 }
 
-func (l *Lease) watch(renew bool, wake <-chan struct{}) {
+func (l *lease) watch(renew bool, wake <-chan struct{}) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {

@@ -39,7 +39,7 @@ func TestLifecycleBlockedRenewCannotDelayLoss(t *testing.T) {
 			}
 			synctest.Wait()
 			select {
-			case <-lease.done:
+			case <-testConcreteLease(t, lease).done:
 			default:
 				t.Fatal("blocked renewal delayed lease loss notification")
 			}
@@ -55,7 +55,7 @@ func TestLifecycleBlockedRenewCannotDelayLoss(t *testing.T) {
 			close(resume)
 			synctest.Wait()
 			select {
-			case <-lease.stopped:
+			case <-testConcreteLease(t, lease).stopped:
 			default:
 				t.Fatal("renew worker failed to drain")
 			}
