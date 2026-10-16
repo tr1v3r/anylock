@@ -84,7 +84,7 @@ func WithTable(name string) Option {
 }
 
 // New constructs a driver without connecting or creating schema. The default
-// table is public.pkg_lock_leases. Prefix is prepended verbatim to logical keys;
+// table is public.anylock_leases. Prefix is prepended verbatim to logical keys;
 // reserve a namespace and include separators as desired. Nil pools/options and
 // prefixes containing NUL or invalid UTF-8 are rejected. Callers retain pool ownership.
 func New(db *sql.DB, prefix string, options ...Option) (*Driver, error) {
@@ -94,7 +94,7 @@ func New(db *sql.DB, prefix string, options ...Option) (*Driver, error) {
 	if !validText(prefix) {
 		return nil, errors.New("anylock/postgres: prefix must be valid UTF-8 without NUL")
 	}
-	d := &Driver{db: db, prefix: prefix, table: `"public"."pkg_lock_leases"`}
+	d := &Driver{db: db, prefix: prefix, table: `"public"."anylock_leases"`}
 	for _, option := range options {
 		if option == nil {
 			return nil, errors.New("anylock/postgres: nil option")
