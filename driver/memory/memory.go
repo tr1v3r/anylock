@@ -132,20 +132,20 @@ func (d *Driver) Renew(ctx context.Context, key, owner string, ttl time.Duration
 	return result(ctx, true)
 }
 
-// Release atomically deletes only a matching, unexpired lease. False means absent,
-// expired, or different ownership; a stale owner can never delete a successor.
-// Unlike a core Lease handle, direct driver releases are not idempotently true.
+// Release atomically deletes a stored record only when its owner matches. Expired
+// entries may already have been swept; false means no matching record remains.
+// A stale owner never deletes a successor. The bool reports an owner-checked
+// deletion, not prior validity; core Lease.Release treats false as successful cleanup.
 func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 	if err := d.validate(ctx, key, owner); err != nil {
 		return false, err
 	}
-	now, err := d.begin(ctx)
-	if err != nil {
+	if _, err := d.begin(ctx); err != nil {
 		return false, err
 	}
 	defer d.leave()
 	e := d.entries[key]
-	if e == nil || now >= e.expires || e.owner != owner {
+	if e == nil || e.owner != owner {
 		return result(ctx, false)
 	}
 	d.remove(e)

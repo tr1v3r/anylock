@@ -12,6 +12,13 @@ See the [core guide](../../README.md) for client configuration, execution gates,
 lease lifecycle and safety limits. The [executable examples](example_test.go) show
 construction and direct driver operations.
 
+`Release` atomically deletes a key only when its owner matches. Redis treats expired
+keys as absent; the driver returns `false, nil` when no matching key remains. Its
+bool reports deletion, not prior lease validity. Core `Lease.Release` treats a
+missing/successor-owned key as successful, idempotent cleanup. Backend/context
+errors still need handling; cleanup never revives a closed handle or deletes a
+successor's key. `Renew` continues to require a live matching owner.
+
 From this directory:
 
 ```sh

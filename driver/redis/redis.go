@@ -147,8 +147,10 @@ func (d *Driver) Renew(ctx context.Context, key, owner string, ttl time.Duration
 	return scriptResult(d.client.Eval(ctx, renewScript, []string{d.prefix + key}, owner, milliseconds), "renew")
 }
 
-// Release atomically deletes only an unexpired lease belonging to owner. False
-// means ownership was lost; a successor's lease is never removed.
+// Release atomically deletes a stored key only when its owner matches. Redis
+// treats expired keys as absent, so false means no matching key remains. A
+// successor's key is never removed. The bool reports deletion, not prior validity;
+// core Lease.Release treats false as successful cleanup.
 func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 	if err := d.validate(ctx, key, owner); err != nil {
 		return false, err

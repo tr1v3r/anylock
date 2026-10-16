@@ -130,9 +130,14 @@ func ExampleDriver_Release() {
 	mock.ExpectExec(`DELETE FROM`).WithArgs("myapp:leases:resource:123", owner).WillReturnResult(sqlmock.NewResult(0, 1))
 	released, err = d.Release(ctx, "resource:123", owner)
 	fmt.Println("current owner released:", released, "error:", err)
-	// Release affects only this live owner; it never closes the caller's DB.
+	// A matching row is deleted even after expiry; absent rows are a no-op.
+	// Release never closes the caller's DB.
+	mock.ExpectExec(`DELETE FROM`).WithArgs("myapp:leases:resource:123", owner).WillReturnResult(sqlmock.NewResult(0, 0))
+	released, err = d.Release(ctx, "resource:123", owner)
+	fmt.Println("absent row released:", released, "error:", err)
 
 	// Output:
 	// other owner released: false error: <nil>
 	// current owner released: true error: <nil>
+	// absent row released: false error: <nil>
 }

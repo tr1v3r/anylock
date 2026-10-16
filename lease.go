@@ -51,9 +51,10 @@ type Lease interface {
 	// releasing remote ownership. An expired/lost handle may still try owner-checked
 	// cleanup. Use a live cleanup context, not a canceled acquisition context.
 	//
-	// Successful releases are idempotent. A missing/successor-owned key returns
-	// ErrLeaseLost. Backend/context errors may leave the key until its TTL; Release
-	// can be retried with another context, but Renew can never restart this handle.
+	// Cleanup is idempotent: a missing or successor-owned record is a successful
+	// no-op. A nil result is not proof of prior ownership or lease validity.
+	// Backend/context errors remain errors and cleanup can be retried with another
+	// context, but Renew can never restart this handle or reset its terminal cause.
 	Release(ctx context.Context) error
 }
 
@@ -82,9 +83,8 @@ type lease struct {
 
 	// gate serializes remote renewal/release without making context-aware callers
 	// wait unconditionally for a mutex held across an in-flight network operation.
-	gate         chan struct{}
-	releaseDone  bool
-	releaseError error
+	gate        chan struct{}
+	releaseDone bool
 }
 
 var _ Lease = (*lease)(nil)
@@ -251,9 +251,10 @@ func (l *lease) Renew(ctx context.Context) error {
 // releasing remote ownership. An expired/lost handle may still try owner-checked
 // cleanup. Use a live cleanup context, not a canceled acquisition context.
 //
-// Successful releases are idempotent. A missing/successor-owned key returns
-// ErrLeaseLost. Backend/context errors may leave the key until its TTL; Release
-// can be retried with another context, but Renew can never restart this handle.
+// Cleanup is idempotent: a missing or successor-owned record is a successful
+// no-op. A nil result is not proof of prior ownership or lease validity.
+// Backend/context errors remain errors and cleanup can be retried with another
+// context, but Renew can never restart this handle or reset its terminal cause.
 func (l *lease) Release(ctx context.Context) error {
 	l.mu.Lock()
 	_ = l.stateLocked()
@@ -269,19 +270,16 @@ func (l *lease) Release(ctx context.Context) error {
 	}
 	defer l.leave()
 	if l.releaseDone {
-		return l.releaseError
+		return nil
 	}
 	request, cancel := context.WithTimeout(ctx, l.operationTimeout)
 	defer cancel()
-	owned, err := l.driver.Release(request, l.key, l.owner)
+	_, err := l.driver.Release(request, l.key, l.owner)
 	if err != nil {
 		return fmt.Errorf("anylock: release %q: %w", l.key, err)
 	}
 	l.releaseDone = true
-	if !owned {
-		l.releaseError = ErrLeaseLost
-	}
-	return l.releaseError
+	return nil
 }
 
 func (l *lease) run() {

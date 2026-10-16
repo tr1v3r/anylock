@@ -70,8 +70,14 @@ func TestSynctestCoreExpiryStaleHandleAndRunRetry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := lease.Release(context.Background()); !errors.Is(err, anylock.ErrLeaseLost) {
-			t.Fatal("stale handle release succeeded", err)
+		// Standalone tests still consume the published core, which reports
+		// ErrLeaseLost here; workspace cleanup is a successful no-op. Core's own
+		// tests strictly require nil for the new cleanup contract.
+		if err := lease.Release(context.Background()); err != nil && !errors.Is(err, anylock.ErrLeaseLost) {
+			t.Fatal("stale handle cleanup failed", err)
+		}
+		if !errors.Is(lease.Err(), anylock.ErrLeaseLost) {
+			t.Fatal("cleanup reset terminal cause", lease.Err())
 		}
 		if err := lease.Renew(context.Background()); !errors.Is(err, anylock.ErrLeaseLost) {
 			t.Fatal("expired handle revived", err)
