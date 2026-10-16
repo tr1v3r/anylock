@@ -123,6 +123,71 @@ table. Use `WithTable` for another table and see the [driver guide](driver/postg
 for schema, permissions and expiry cleanup. `EnsureSchema` may be omitted when the
 table is already provisioned; do not run concurrent startup DDL on every replica.
 
+## Use multiple backends
+
+Compose Lockers in the application, not by changing a live Locker's Driver. Each
+Locker binds one Driver at construction; each acquired Lease keeps that Driver
+reference and owner for renewal/release. There is no `SetDriver` or built-in
+`LockerManager`, dynamic router, cross-backend fallback, or multi-backend lock protocol.
+
+Prefer named business domains over a string-keyed backend registry. For example,
+create `redisLocker`, `postgresLocker` and `memoryLocker` once at startup using the
+setup functions above, check each initialization error, then inject an application-owned bundle:
+
+```go
+// Application code, not a type exported by anylock.
+type AppLocks struct {
+    Orders        *anylock.Locker // Redis: cross-process order coordination
+    ScheduledJobs *anylock.Locker // PostgreSQL: cross-process job coordination
+    LocalRefresh  *anylock.Locker // Memory: goroutines in this process only
+}
+
+locks := AppLocks{
+    Orders:        redisLocker,
+    ScheduledJobs: postgresLocker,
+    LocalRefresh:  memoryLocker,
+}
+```
+
+Order handlers use `locks.Orders`; job workers use `locks.ScheduledJobs`. Each field
+supports both fixed-TTL gates and leases. Keep these bindings and the Drivers'
+backend configuration stable while the application is serving work; consumers
+should not select a backend afresh on each attempt. The application still owns and
+closes Redis clients/SQL pools, after stopping work and settling leases; the bundle
+and Lockers do not own those resources.
+
+### Coordination boundaries
+
+- All callers for one logical lock must agree on its backend data space and key
+  mapping: Redis service/database/prefix, PostgreSQL database/table/prefix, or the
+  same memory Driver instance. Different Locker/Driver objects can coordinate
+  through the same shared backend; separate memory Driver instances cannot.
+- The same key text in Redis and PostgreSQL names **two independent locks**. A
+  replica using `Orders` in Redis does not contend with one using it in PostgreSQL.
+  Use consistent domain bindings across replicas and deliberate keys/prefixes for
+  domains that should not contend. Gates and leases share a namespace too.
+- Return backend errors; do not try another backend as a fallback. A timeout or
+  cancellation can follow a committed reservation. Even a busy result does not
+  authorize switching stores: the other store may happily grant a second lock.
+- Replacing an application field affects subsequent calls, not existing Lease
+  handles or fixed-TTL reservations. It does **not** migrate a lock domain. Backend
+  migration needs an explicit coordinated cutover: stop old-path acquisition and
+  work, settle renewals/in-flight or uncertain requests, and account for remaining
+  leases and retained gate markers before enabling the new path everywhere. Simply
+  waiting one TTL while old callers can still acquire/renew is not a cutover.
+- This is workload selection, not stronger distributed locking. Memory is not an
+  outage fallback for Redis/PostgreSQL; composing backends adds no fencing,
+  exactly-once guarantee, or permission to continue work after lease loss.
+
+See the executable [`ExampleLocker_multipleBackends`](composition_example_test.go)
+for same-store contention, independent domains and Lease binding. It uses only
+standard-library test fixtures, not Redis/PostgreSQL services. Its `Output` is
+checked by the existing CI test matrix; run it locally with:
+
+```sh
+go test -race -run '^ExampleLocker_multipleBackends$' -count=1 .
+```
+
 ## Fixed-TTL execution
 
 Using a Locker created with any of the drivers above:
