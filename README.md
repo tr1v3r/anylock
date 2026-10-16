@@ -266,6 +266,22 @@ func run(ctx context.Context, locker *anylock.Locker) error {
 
 ## API and lifecycle
 
+`Lease` is the interface for an acquired lease. It exposes the key, cooperative
+work context, validity deadline and terminal state, plus renewal and release.
+`TryLock` and `Lock` return a non-nil `Lease` on success and `nil` on error.
+
+```go
+type Lease interface {
+    Key() string
+    Context() context.Context
+    Deadline() time.Time
+    Done() <-chan struct{}
+    Err() error
+    Renew(ctx context.Context) error
+    Release(ctx context.Context) error
+}
+```
+
 - `New(driver, options...)`: validates the driver and configuration; it does not
   start workers or take ownership of backend connections.
 - `TryRun(ctx, key, ttl, fn)` / `Run(ctx, key, ttl, fn)`: fixed-TTL execution as
@@ -347,65 +363,6 @@ Redis might have renewed it; subsequent work must not rely on that uncertainty.
 Cancellation does not automatically delete remote ownership; use Release with a
 separate live cleanup context. A failed release can leave ownership until TTL.
 
-## Lease interface migration from v0.1.0
-
-**Unreleased API change:** the development API replaces the exported concrete
-`Lease` with an interface. Published `v0.1.0` tags are unchanged; this is not a
-release, and installing the published version does not select this API.
-
-`TryLock` and `Lock` now return `(anylock.Lease, error)`, not
-`(*anylock.Lease, error)`. The seven methods and their ownership/lifecycle
-contracts are unchanged:
-
-```go
-type Lease interface {
-    Key() string
-    Context() context.Context
-    Deadline() time.Time
-    Done() <-chan struct{}
-    Err() error
-    Renew(ctx context.Context) error
-    Release(ctx context.Context) error
-}
-```
-
-- Replace explicit `*anylock.Lease` fields, parameters, return types and channels
-  with `anylock.Lease`. Calls using type inference usually need no changes.
-- Do not take a pointer to the interface, construct a zero-value handle, or depend
-  on the SDK's concrete implementation: it is now private. Copying a returned
-  interface shares the same acquisition and terminal state, not a new lock.
-- On acquisition failure the SDK returns a **nil interface**, never a typed-nil
-  implementation. On success it returns a non-nil usable handle. Custom factories
-  must also return literal `nil` on errors, not a nil pointer boxed in an interface.
-- Embed `anylock.Lease` in a decorator and override only the methods you observe.
-  Custom implementations and wrappers must preserve concurrent safety, permanent
-  invalidation and the documented timeout/cleanup/error contracts. An interface
-  or a test double does not strengthen the backend's safety guarantees.
-
-The SDK still returns concrete `*anylock.Locker` from `New`; no public Locker
-interface or adapter is needed for application-owned consumer interfaces:
-
-```go
-// Application code: request only the operation this consumer needs.
-type LockAcquirer interface {
-    TryLock(ctx context.Context, key string, ttl time.Duration) (anylock.Lease, error)
-}
-
-var _ LockAcquirer = (*anylock.Locker)(nil)
-```
-
-Go requires exact method return types, so update consumer interfaces that still
-return `*anylock.Lease`. The same rule applies to `Lock` and function values that
-store either method. See the runnable [decorator example](lease_interface_example_test.go)
-and [external interface tests](lease_interface_test.go). Embedding preserves the
-underlying notifications; `Done` signals local invalidation, not remote deletion,
-and `Context().Deadline()` remains distinct from the renewable lease `Deadline()`.
-
-Driver APIs, import paths and runtime lease behavior are unchanged. Driver module
-pins remain published versions; workspace tests exercise the new core API and
-standalone checks exercise those published pins. A future core release and driver
-pin updates must follow the [separate release order](MODULES.md#version-pins-and-release-order).
-
 ## Driver contract
 
 ```go
@@ -455,10 +412,8 @@ workspace suite; real backend semantics have opt-in integration tests.
 ## Modules and testing
 
 The core, each driver and the cross-module integration suite have separate
-`go.mod` files. The module split preserves import paths; see the
-[Lease interface migration](#lease-interface-migration-from-v010) for the current
-source-level API change. Installing the core does not
-require backend clients, simulators or SQL adapters. See [module layout, standalone
+`go.mod` files. Installing the core does not require backend clients, simulators
+or SQL adapters. See [module layout, standalone
 checks and release order](MODULES.md).
 
 ```sh

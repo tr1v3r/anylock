@@ -54,13 +54,7 @@ import because both modules provide the driver package. The initial split theref
 pins the core to a reachable commit that already contains the nested module boundary. This
 bootstrap uses ordinary commits/pseudo-versions; it does not create a release.
 The first core release, `v0.1.0`, contains all nested module boundaries. Driver
-modules now pin that release instead of the bootstrap pseudo-version. The core
-API was unchanged by that split. The current development API changes `Lease` from
-an exported concrete type to an interface; see the [migration guide](README.md#lease-interface-migration-from-v010).
-Existing published tags are unchanged. Driver production APIs still use the same
-`Driver` contract, and their published core pins remain intact until a separate
-release updates them. The PostgreSQL cleanup test consumes only a local `Release`
-interface so it compiles against both its published pin and the workspace API.
+modules now pin that release instead of the bootstrap pseudo-version.
 
 For future releases:
 
