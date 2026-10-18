@@ -16,8 +16,8 @@ github.com/redis/go-redis/v9 v9.22.0 h1:laDvpYXTJtZLloinw1fA5Kqd6HAEH2XKxOkG/PDq
 github.com/redis/go-redis/v9 v9.22.0/go.mod h1:y2g0Wj8rQvuK0ELM+oxSudcLtC09JScs98I/X9gRWY4=
 github.com/stretchr/testify v1.3.0 h1:TivCn/peBQ7UY8ooIcPgZFpTNSz0Q2U6UrFlUfqbe0Q=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
-github.com/tr1v3r/anylock v0.1.0 h1:jL5X/acMxXCXKso2kqrsz3t0JSmLnzF/VvaBLvbLONg=
-github.com/tr1v3r/anylock v0.1.0/go.mod h1:BRYPYeCZYETNHXKNXaJ0RmdInEoduo4iaHlkw7owIWw=
+github.com/tr1v3r/anylock v0.3.0 h1:m/0hFuchsNvM2xF08LjwkBJlsZr6rnjrqlXaubFfdPo=
+github.com/tr1v3r/anylock v0.3.0/go.mod h1:BRYPYeCZYETNHXKNXaJ0RmdInEoduo4iaHlkw7owIWw=
 github.com/yuin/gopher-lua v1.1.1 h1:kYKnWBjvbNP4XLT3+bPEwAXJx262OhaHDWDVOPjL46M=
 github.com/yuin/gopher-lua v1.1.1/go.mod h1:GBR0iDaNXjAgGg9zfCvksxSRnQx76gclCIb7kdAd1Pw=
 github.com/zeebo/xxh3 v1.1.0 h1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=
