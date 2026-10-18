@@ -444,10 +444,13 @@ ANYLOCK_REDIS_ADDR=127.0.0.1:6379 ./scripts/modules.sh go test -race -tags=integ
 ```
 
 PostgreSQL tests use sqlmock by default; see its [driver guide](driver/postgres/README.md)
-for PostgreSQL 12/16 integration tests. The [memory driver](driver/memory/README.md)
-has deterministic expiry and concurrency tests, plus optional stress diagnostics.
+for PostgreSQL 12–18 × Go 1.24/stable integration tests. The
+[memory driver](driver/memory/README.md) has deterministic expiry and concurrency
+tests, plus optional stress diagnostics.
 
-Default Redis tests use miniredis and exercise owner checks, expiry, Lua,
+Real Redis CI covers 6.2, 7.2, 7.4, 8.2, 8.4, 8.6, 8.8 and 8.10, each with
+Go 1.24/stable and race detection. Default Redis tests use miniredis and exercise
+owner checks, expiry, Lua,
 contention, rounding and failure responses. Core tests include a memory driver,
 concurrency/cancellation scenarios, plus Go 1.25+ virtual-time tests for renewal,
 expiry, conservative deadlines and stalled requests. Core/default tests also

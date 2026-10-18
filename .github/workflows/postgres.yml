@@ -12,7 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: ['12', '16']
+        # Keep 12/13 as legacy syntax-compatibility checks alongside maintained majors.
+        postgres: ['12', '13', '14', '15', '16', '17', '18']
         go: ['1.24.x', 'stable']
     services:
       postgres:
@@ -33,7 +34,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
-      - name: Test real PostgreSQL owner, expiry, and deadline behavior
+          cache-dependency-path: '**/go.sum'
+      - name: Record PostgreSQL server version
+        run: docker exec "${{ job.services.postgres.id }}" postgres --version
+      - name: Test real PostgreSQL ownership, expiry, deadlines, and fencing
         env:
           ANYLOCK_POSTGRES_DSN: postgres://anylock:anylock-test-only@127.0.0.1:5432/anylock?sslmode=disable
         working-directory: driver/postgres

@@ -30,6 +30,15 @@ GOWORK=off go test -race ./...
 See [module development and release order](../../MODULES.md) before changing core
 version requirements or publishing a directory-prefixed driver tag.
 
+## CI compatibility matrix
+
+The [real-server workflow](../../.github/workflows/redis.yml) tests Redis 6.2,
+7.2, 7.4, 8.2, 8.4, 8.6, 8.8 and 8.10, each on Go 1.24 and stable with race
+detection. It runs all workspace modules, including the driver and cross-module
+ownership/expiry/fencing tests. Versioned Alpine tags track patch updates within
+each selected release line. The PostgreSQL workflow similarly covers majors
+12 through 18. These are server-version checks, not Cluster/failover guarantees.
+
 ## Explicit fencing
 
 Use `anylock.New(driver, anylock.WithFencing())`. Fenced acquisition uses one

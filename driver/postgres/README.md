@@ -230,8 +230,9 @@ exported operations/options. Its SQL mock is test-only plumbing, not an in-memor
 PostgreSQL substitute. The real-server suite covers atomic ownership, database-clock
 expiry, row-lock/deadline races, and core integration. Local integration tests skip
 without a DSN; **CI supplies one and runs the bounded regressions unconditionally**
-in the existing PostgreSQL 12/16 × Go 1.24/stable matrix. No stress environment
-variable is needed for these mandatory regressions:
+in the PostgreSQL 12–18 × Go 1.24/stable matrix. PostgreSQL 12/13 remain
+legacy syntax-compatibility targets; use a maintained release in production.
+No stress environment variable is needed for these mandatory regressions:
 
 | Regression | Size and safety checks |
 | --- | --- |
