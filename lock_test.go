@@ -20,7 +20,7 @@ type memoryDriver struct {
 
 func newMemoryDriver() *memoryDriver { return &memoryDriver{records: make(map[string]memoryRecord)} }
 
-func (d *memoryDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+func (d *memoryDriver) tryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -68,11 +68,12 @@ type hookedDriver struct {
 	release func(context.Context, string, string) (bool, error)
 }
 
-func (d hookedDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+func (d hookedDriver) tryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 	if d.acquire != nil {
 		return d.acquire(ctx, key, owner, ttl)
 	}
-	return d.Driver.TryAcquire(ctx, key, owner, ttl)
+	result, err := d.Driver.TryAcquire(ctx, key, owner, ttl)
+	return result.Acquired, err
 }
 
 func (d hookedDriver) Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
@@ -475,4 +476,14 @@ func TestConcurrentOwnershipAndLeaseOperations(t *testing.T) {
 	wg.Add(1)
 	go func() { defer wg.Done(); _ = lease.Release(context.Background()) }()
 	wg.Wait()
+}
+
+func (d *memoryDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (AcquireResult, error) {
+	ok, err := d.tryAcquire(ctx, key, owner, ttl)
+	return AcquireResult{Acquired: ok}, err
+}
+
+func (d hookedDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (AcquireResult, error) {
+	ok, err := d.tryAcquire(ctx, key, owner, ttl)
+	return AcquireResult{Acquired: ok}, err
 }

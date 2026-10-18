@@ -139,7 +139,7 @@ func TestLifecycleSlowRequestsUseStartNotResponseTime(t *testing.T) {
 			Driver: memory,
 			acquire: func(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 				time.Sleep(time.Second)
-				return memory.TryAcquire(ctx, key, owner, ttl)
+				return memory.tryAcquire(ctx, key, owner, ttl)
 			},
 			renew: func(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 				time.Sleep(time.Second)

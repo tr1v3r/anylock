@@ -216,7 +216,7 @@ func TestRunLifecycleSlowSuccessRejectsElapsedTTLWithoutCleanup(t *testing.T) {
 					acquire: func(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 						// Model a slow response whose remote marker is still live on arrival.
 						time.Sleep(3 * time.Second)
-						return memory.TryAcquire(ctx, key, owner, ttl)
+						return memory.tryAcquire(ctx, key, owner, ttl)
 					},
 					release: func(context.Context, string, string) (bool, error) {
 						releases++

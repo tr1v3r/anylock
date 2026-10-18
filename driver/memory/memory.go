@@ -8,9 +8,10 @@
 // on unrelated keys. There is no background worker: a completely idle Driver may
 // retain expired entries until another operation or until the Driver is collected.
 //
-// This backend provides no cross-process coordination, restart durability, fencing
-// tokens, or exactly-once execution. Process pauses and the platform's monotonic
-// clock behavior, including whether it advances during system sleep, still apply.
+// Fenced acquisition uses an instance-wide monotonic counter. This backend provides
+// no cross-process coordination, restart durability, or exactly-once execution.
+// Process pauses and the platform's monotonic clock behavior, including whether
+// it advances during system sleep, still apply.
 // The anylock core, not this driver, generates owners and manages lease lifecycle.
 //
 // Operations recheck cancellation and actual deadlines before returning. A late
@@ -22,6 +23,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/tr1v3r/anylock"
@@ -35,9 +37,10 @@ type Driver struct {
 	epoch   time.Time
 	entries map[string]*entry
 	expiry  expiryHeap
+	fence   uint64
 }
 
-var _ anylock.Driver = (*Driver)(nil)
+var _ anylock.FencingDriver = (*Driver)(nil)
 
 type entry struct {
 	key     string
@@ -78,25 +81,47 @@ func New() *Driver {
 }
 
 // TryAcquire atomically reserves an absent or expired key for ttl. A live key
-// returns false even when owner matches: acquiring is not renewing. Direct callers
+// returns Acquired false even when owner matches: acquiring is not renewing. Direct callers
 // must use a fresh, unguessable owner for every new acquisition attempt.
-func (d *Driver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+func (d *Driver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (anylock.AcquireResult, error) {
+	return d.acquire(ctx, key, owner, ttl, false)
+}
+
+// TryAcquireFenced binds ownership to a new instance-wide monotonic token. The
+// counter survives expiry/release/sweeping, but not process/Driver replacement.
+func (d *Driver) TryAcquireFenced(
+	ctx context.Context, key, owner string, ttl time.Duration,
+) (anylock.AcquireResult, error) {
+	return d.acquire(ctx, key, owner, ttl, true)
+}
+
+func (d *Driver) acquire(
+	ctx context.Context, key, owner string, ttl time.Duration, fenced bool,
+) (anylock.AcquireResult, error) {
 	if err := d.validate(ctx, key, owner); err != nil {
-		return false, err
+		return anylock.AcquireResult{}, err
 	}
 	if ttl <= 0 {
-		return false, errors.New("anylock/memory: TTL must be positive")
+		return anylock.AcquireResult{}, errors.New("anylock/memory: TTL must be positive")
 	}
 	now, err := d.begin(ctx)
 	if err != nil {
-		return false, err
+		return anylock.AcquireResult{}, err
 	}
 	defer d.leave()
 	if e := d.entries[key]; e != nil {
 		if now < e.expires {
-			return result(ctx, false)
+			return anylock.AcquireResult{}, requestError(ctx)
 		}
 		d.remove(e)
+	}
+	var fence uint64
+	if fenced {
+		if d.fence == math.MaxUint64 {
+			return anylock.AcquireResult{}, errors.New("anylock/memory: fence exhausted")
+		}
+		d.fence++
+		fence = d.fence
 	}
 	if d.entries == nil {
 		d.entries = make(map[string]*entry)
@@ -104,7 +129,10 @@ func (d *Driver) TryAcquire(ctx context.Context, key, owner string, ttl time.Dur
 	e := &entry{key: key, owner: owner, expires: now + uint64(ttl)}
 	heap.Push(&d.expiry, e)
 	d.entries[key] = e
-	return result(ctx, true)
+	if err := requestError(ctx); err != nil {
+		return anylock.AcquireResult{}, err
+	}
+	return anylock.AcquireResult{Acquired: true, Fence: fence}, nil
 }
 
 // Renew atomically resets the matching live owner's expiry to ttl from this

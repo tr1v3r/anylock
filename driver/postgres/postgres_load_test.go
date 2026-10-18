@@ -120,7 +120,7 @@ func (w *postgresLoadWorker) call(ctx context.Context, d *Driver, op int, key, o
 	var err error
 	switch op {
 	case 0:
-		ok, err = d.TryAcquire(ctx, key, owner, postgresLoadTTL)
+		ok, err = d.tryAcquire(ctx, key, owner, postgresLoadTTL)
 	case 1:
 		ok, err = d.Renew(ctx, key, owner, postgresLoadTTL)
 	case 2:

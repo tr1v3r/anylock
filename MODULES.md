@@ -72,3 +72,15 @@ for example `go get github.com/tr1v3r/anylock/driver/redis@<version>`.
 When adding a module, add it to `go.work` and the lint matrix in CI. The test script
 discovers its `go.mod` automatically. Include its own license notice, pin a
 compatible core version, and keep backend-specific test dependencies local.
+
+## Fencing API development
+
+The fencing change breaks `Driver.TryAcquire` (now `AcquireResult`) and adds
+`Lease.Fence`. Workspace checks use the matching local core/drivers. Existing
+`go.mod` pins remain published versions until release: do not invent an
+unpublished version or add distributable local-path replacements. Consequently,
+standalone driver checks against the old core pin cannot validate this new API.
+Before publishing, release the updated core, update every driver core pin, release
+the drivers, then update the integration pins and run the standalone checks above.
+Until then, validate standalone boundaries in a temporary modfile with local
+replacements; this verifies source isolation, not published consumability.

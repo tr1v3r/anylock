@@ -29,3 +29,25 @@ GOWORK=off go test -race ./...
 
 See [module development and release order](../../MODULES.md) before changing core
 version requirements or publishing a directory-prefixed driver tag.
+
+## Explicit fencing
+
+Use `anylock.New(driver, anylock.WithFencing())`. Fenced acquisition uses one
+Lua script to check the lease, INCR a persistent per-key counter, and install
+ownership. The counter key is `<prefix><key>:__anylock_fence`; the suffix is
+reserved and rejected as a logical lease key, even for ordinary operations.
+Reserve the entire physical namespace across applications/prefixes. Counter keys
+never expire and must not be purged/evicted/restored to older values.
+
+Redis Cluster requires a nonempty hash tag (for example prefix `{locks}:`) so
+lease and counter keys share a slot. A missing tag may cause CROSSSLOT errors;
+there is no fallback. Values are returned as exact decimal strings to avoid Lua
+number rounding above 2^53. The supported range is 1 through MaxInt64; exhaustion
+fails without installing a lease. Contention and renewal do not increment it.
+
+Asynchronous replication/failover, eviction, FLUSH, snapshot rollback, or manual
+resets can repeat/regress tokens. This driver cannot promise failover-safe fencing
+on such a deployment. Choose a backend/fault model that preserves counter history.
+
+Read [the shared fencing contract](../../docs/fencing.md): business storage must
+atomically validate `Lease.Fence()` with protected writes.

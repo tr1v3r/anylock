@@ -23,6 +23,9 @@ import (
 func (l *Locker) TryRun(
 	ctx context.Context, key string, ttl time.Duration, fn func(context.Context) error,
 ) (bool, error) {
+	if l.fencing {
+		return false, ErrFencingRequiresLease
+	}
 	if key == "" {
 		return false, ErrInvalidKey
 	}
@@ -40,7 +43,7 @@ func (l *Locker) TryRun(
 	started := time.Now()
 	request, cancel := context.WithTimeout(ctx, l.operationTimeout)
 	defer cancel()
-	acquired, acquireErr := l.driver.TryAcquire(request, key, owner, ttl)
+	result, acquireErr := l.driver.TryAcquire(request, key, owner, ttl)
 	requestErr := request.Err()
 	requestDeadline, _ := request.Deadline()
 	cancel()
@@ -57,7 +60,10 @@ func (l *Locker) TryRun(
 	if !now.Before(requestDeadline) {
 		return false, fmt.Errorf("anylock: acquire %q: %w", key, context.DeadlineExceeded)
 	}
-	if !acquired {
+	if err := l.validateAcquire(result); err != nil {
+		return false, err
+	}
+	if !result.Acquired {
 		return false, nil
 	}
 	if !now.Before(started.Add(ttl)) {

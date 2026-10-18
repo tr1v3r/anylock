@@ -21,6 +21,12 @@ type Lease interface {
 	// Key returns the logical key, without any driver's namespace prefix.
 	Key() string
 
+	// Fence returns the immutable token from this acquisition, and whether fencing
+	// was enabled. It remains available after expiry/release for diagnostics, but
+	// is never fresh authorization. Check Err/Done and stop work on invalidation.
+	// The target storage must atomically validate the token with each write.
+	Fence() (token uint64, enabled bool)
+
 	// Context returns a context canceled on local lease invalidation. Pass it to
 	// cooperative protected work; use Err for the terminal lease cause. Its Deadline
 	// is inherited from the caller, not the renewable local validity deadline.
@@ -66,6 +72,7 @@ type lease struct {
 	driver           Driver
 	key              string
 	owner            string
+	fence            uint64
 	ttl              time.Duration
 	operationTimeout time.Duration
 	auto             bool
@@ -89,10 +96,12 @@ type lease struct {
 
 var _ Lease = (*lease)(nil)
 
-func newLease(ctx context.Context, locker *Locker, key, owner string, ttl time.Duration, deadline time.Time) *lease {
+func newLease(
+	ctx context.Context, locker *Locker, key, owner string, ttl time.Duration, deadline time.Time, fence uint64,
+) *lease {
 	ctx, cancel := context.WithCancel(ctx)
 	l := &lease{
-		driver: locker.driver, key: key, owner: owner, ttl: ttl, auto: locker.autoRenew,
+		driver: locker.driver, key: key, owner: owner, ttl: ttl, auto: locker.autoRenew, fence: fence,
 		operationTimeout: locker.operationTimeout,
 		ctx:              ctx, cancel: cancel, deadline: deadline,
 		done: make(chan struct{}), stopped: make(chan struct{}),
@@ -106,6 +115,9 @@ func newLease(ctx context.Context, locker *Locker, key, owner string, ttl time.D
 
 // Key returns the logical key, without any driver's namespace prefix.
 func (l *lease) Key() string { return l.key }
+
+// Fence returns this acquisition's immutable token, even after local invalidation.
+func (l *lease) Fence() (uint64, bool) { return l.fence, l.fence != 0 }
 
 // Context returns a context canceled on local lease invalidation. Pass it to
 // cooperative protected work; use Err for the terminal lease cause. Its Deadline

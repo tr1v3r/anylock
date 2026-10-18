@@ -104,7 +104,7 @@ func TestIntegrationRedisLeaseLifecycle(t *testing.T) {
 		t.Fatal(deleteErr)
 	}
 	acquired, err := backend.TryAcquire(ctx, "auto", "successor", 3*time.Second)
-	if err != nil || !acquired {
+	if err != nil || !acquired.Acquired {
 		t.Fatal("failed to install successor", acquired, err)
 	}
 	select {

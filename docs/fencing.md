@@ -1,0 +1,101 @@
+# Explicit fencing
+
+```go
+locker, err := anylock.New(driver, anylock.WithFencing())
+if err != nil { return err } // unsupported driver fails at construction
+lease, err := locker.Lock(ctx, key, ttl)
+if err != nil { return err }
+defer lease.Release(cleanupCtx) // independent live, bounded cleanup context
+token, enabled := lease.Fence()
+if !enabled { return errors.New("fencing required") }
+// Pass lease.Context(), key, and token to storage. The storage atomically
+// validates token AND writes the protected value, in one transaction/operation.
+return storage.Write(lease.Context(), key, token, value)
+```
+
+Driver generates; Lease carries; protected storage validates. anylock does not
+perform business writes or enforce downstream usage. Without that validation,
+there is no fencing protection. See the executable `ExampleWithFencing` in the
+core examples for a downstream high-water mark that rejects a stale owner.
+
+## Acquisition and lifetime contract
+
+- `err != nil`: failed or uncertain outcome. Ignore the result and do no work.
+- `Acquired == false`: contention, Fence must be zero.
+- `Acquired == true`: success. Fence is zero for ordinary acquisition and strictly
+  positive when explicitly requested. Invalid results return
+  `ErrInvalidAcquireResult`; known acquired ownership is best-effort cleaned up.
+- `WithFencing()` requires `FencingDriver.TryAcquireFenced`. Its acquisition must
+  contend with ordinary `TryAcquire` in the same namespace. Capability wrappers
+  must explicitly forward this interface; otherwise construction rejects them.
+- Each successful fenced acquisition has a new, strictly increasing token for
+  that key in its backend's declared fault model. Tokens may have gaps and are
+  not timestamps or business operation IDs. A retry after an uncertain outcome
+  gets a new owner and must never reuse a token returned with an error.
+- Renew/auto-renew never change the token. Release, expiry, cancellation, and
+  ownership loss never make an old handle valid again. `Fence()` is immutable
+  and remains available for diagnostics after invalidation; it is not a validity
+  check or new authorization. Use Err/Done and stop work after invalidation.
+- `TryRun`/`Run` return `ErrFencingRequiresLease` on a fenced Locker, before
+  backend dispatch or callback execution. Their callbacks have no token API.
+
+The core validates the shape of results; it cannot prove a driver's distributed
+counter monotonicity. Custom drivers must atomically bind acquisition and token
+allocation, fail on exhaustion, and document their persistence/failover model.
+
+## Downstream storage contract
+
+Maintain a durable highest accepted token for each protected resource. In the
+same atomic operation as the business mutation, reject tokens below that mark
+and advance it when accepting a newer token. Equal tokens may be accepted for
+multiple writes by the same lease, according to business requirements. Never
+check the token in a separate read followed by an unguarded write. Keep the mark
+across business-row deletion/recreation and storage restores as required by the
+resource's lifetime.
+
+Once storage accepts a newer token, a paused older owner cannot overwrite its
+work. A token alone does not let storage discover lease expiry or acquisition of
+a successor: before observing the higher token, it may still accept an old one.
+Fencing does not stop application execution, make external effects reversible,
+or provide exactly-once execution. Separate idempotency/transaction rules remain
+necessary where the business needs them.
+
+Use a stable key-to-resource mapping and a stable counter domain. Switching
+backends, counters, prefixes, or memory instances does not preserve token order;
+a coordinated migration must preserve/advance the counter above all previously
+accepted tokens or establish a separate resource epoch enforced by storage.
+
+## Backend scope
+
+| Driver | Counter | Required assumptions |
+| --- | --- | --- |
+| memory | Instance-wide uint64, protected by the ownership gate | Same live Driver instance; restarts/replacement reset state |
+| Redis | Persistent per-key signed 64-bit INCR counter, allocated in acquisition Lua | No counter eviction/loss/rollback/reset; Cluster keys share a slot |
+| PostgreSQL | Permanent logged ascending bigint sequence; CACHE 1, NO CYCLE | Same sequence for a lock domain; no counter rollback/reset; durability and failover preserve history |
+
+Read each driver's README before choosing a backend. Redis asynchronous failover
+can lose acknowledged increments; this implementation cannot turn that deployment
+into a failover-safe fencing service.
+
+PostgreSQL token allocation happens in a SELECT consuming the acquired row from
+a modifying CTE, after its row-lock wait. The sequence uses `CACHE 1` because
+larger per-session caches can produce out-of-order values. See the official
+[sequence documentation](https://www.postgresql.org/docs/current/sql-createsequence.html)
+and [modifying CTE semantics](https://www.postgresql.org/docs/current/queries-with.html#QUERIES-WITH-MODIFYING).
+Redis returns the counter via GET's decimal string, preserving precision beyond
+Lua's numeric range; INCR remains bounded by signed 64-bit arithmetic. See
+[Redis INCR](https://redis.io/docs/latest/commands/incr/).
+
+## API migration
+
+`Driver.TryAcquire` now returns `AcquireResult` instead of bool. Custom ordinary
+drivers return `AcquireResult{Acquired: ok}` with Fence zero. Direct callers use
+`result.Acquired`; Renew and Release still return bool. Implementing
+`TryAcquireFenced` explicitly declares capability. Add `Fence() (uint64, bool)`
+to custom Lease implementations; ordinary leases return `(0, false)`. Decorators
+must forward Fence along with the other Lease methods.
+
+Built-in driver clients, owner matching, ordinary acquisition, and lease table
+layout remain the same. Redis reserves the `:__anylock_fence` key suffix.
+PostgreSQL fenced callers must explicitly provision its sequence. For nested
+module publishing and the old core pin limitation, see [MODULES.md](../MODULES.md).

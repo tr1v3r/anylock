@@ -65,11 +65,11 @@ func ExampleDriver_TryAcquire() {
 	// The higher-level anylock.Locker normally manages this token and lifecycle.
 	owner := rand.Text()
 	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
-	fmt.Println("acquired:", acquired, "error:", err)
+	fmt.Println("acquired:", acquired.Acquired, "error:", err)
 
 	// A new attempt cannot replace the live marker; use Renew to extend it.
 	acquired, err = driver.TryAcquire(ctx, "resource:123", rand.Text(), time.Hour)
-	fmt.Println("contended:", !acquired, "error:", err)
+	fmt.Println("contended:", !acquired.Acquired, "error:", err)
 	renewed, err := driver.Renew(ctx, "resource:123", owner, time.Hour)
 	fmt.Println("renewed:", renewed, "error:", err)
 	released, err := driver.Release(ctx, "resource:123", owner)
@@ -88,7 +88,7 @@ func ExampleDriver_Renew() {
 	defer cancel()
 	owner := rand.Text()
 	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
-	if err != nil || !acquired {
+	if err != nil || !acquired.Acquired {
 		panic("failed to acquire initial owner")
 	}
 	renewed, err := driver.Renew(ctx, "resource:123", "not-the-owner", time.Hour)
@@ -107,7 +107,7 @@ func ExampleDriver_Release() {
 	defer cancel()
 	owner := rand.Text()
 	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
-	if err != nil || !acquired {
+	if err != nil || !acquired.Acquired {
 		panic("failed to acquire initial owner")
 	}
 	// A stale or unrelated owner must never delete the current owner's key.

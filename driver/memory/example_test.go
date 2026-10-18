@@ -63,9 +63,9 @@ func ExampleDriver_TryAcquire() {
 	// automatically and also manages local lease validity and renewal.
 	owner := rand.Text()
 	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
-	fmt.Println("acquired:", acquired, "error:", err)
+	fmt.Println("acquired:", acquired.Acquired, "error:", err)
 	acquired, err = driver.TryAcquire(ctx, "resource:123", rand.Text(), time.Hour)
-	fmt.Println("contended:", !acquired, "error:", err)
+	fmt.Println("contended:", !acquired.Acquired, "error:", err)
 
 	// Output:
 	// acquired: true error: <nil>
@@ -77,7 +77,7 @@ func ExampleDriver_Renew() {
 	ctx := context.Background()
 	owner := rand.Text()
 	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
-	if err != nil || !acquired {
+	if err != nil || !acquired.Acquired {
 		panic("initial acquisition failed")
 	}
 	renewed, err := driver.Renew(ctx, "resource:123", "not-the-owner", time.Hour)
@@ -95,7 +95,7 @@ func ExampleDriver_Release() {
 	ctx := context.Background()
 	owner := rand.Text()
 	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
-	if err != nil || !acquired {
+	if err != nil || !acquired.Acquired {
 		panic("initial acquisition failed")
 	}
 	released, err := driver.Release(ctx, "resource:123", "not-the-owner")

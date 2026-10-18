@@ -20,13 +20,14 @@ type exampleRecord struct {
 type exampleDriver struct {
 	mu      sync.Mutex
 	records map[string]exampleRecord
+	fence   uint64
 }
 
 func newExampleDriver() *exampleDriver {
 	return &exampleDriver{records: make(map[string]exampleRecord)}
 }
 
-func (d *exampleDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+func (d *exampleDriver) tryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -350,4 +351,72 @@ func ExampleLease_Context() {
 	// Output:
 	// work active: true
 	// work canceled: true
+}
+
+func (d *exampleDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (anylock.AcquireResult, error) {
+	ok, err := d.tryAcquire(ctx, key, owner, ttl)
+	return anylock.AcquireResult{Acquired: ok}, err
+}
+
+func (d *exampleDriver) TryAcquireFenced(
+	ctx context.Context, key, owner string, ttl time.Duration,
+) (anylock.AcquireResult, error) {
+	if err := ctx.Err(); err != nil {
+		return anylock.AcquireResult{}, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if record, ok := d.records[key]; ok && time.Now().Before(record.deadline) {
+		return anylock.AcquireResult{}, nil
+	}
+	d.fence++ // Example fixture only; built-in drivers also reject counter exhaustion.
+	d.records[key] = exampleRecord{owner, time.Now().Add(ttl)}
+	return anylock.AcquireResult{Acquired: true, Fence: d.fence}, nil
+}
+
+// fencedStorage models a single protected resource. A real database performs
+// this comparison, high-water update and business mutation in one atomic write.
+type fencedStorage struct {
+	mu      sync.Mutex
+	highest uint64
+	value   string
+}
+
+func (s *fencedStorage) write(token uint64, value string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if token == 0 || token < s.highest {
+		return false
+	}
+	s.highest, s.value = token, value
+	return true
+}
+
+func ExampleWithFencing() {
+	locker := newExampleLocker(anylock.WithFencing())
+	ctx := context.Background()
+	first, err := locker.TryLock(ctx, "resource:123", time.Hour)
+	if err != nil {
+		panic(err)
+	}
+	oldToken, enabled := first.Fence()
+	fmt.Println("fencing enabled:", enabled)
+	releaseExampleLease(first)
+
+	second, err := locker.TryLock(ctx, "resource:123", time.Hour)
+	if err != nil {
+		panic(err)
+	}
+	defer releaseExampleLease(second)
+	newToken, _ := second.Fence()
+	storage := new(fencedStorage)
+	fmt.Println("new owner write:", storage.write(newToken, "new value"))
+	// Simulate an old in-flight write arriving after storage accepted the new owner.
+	fmt.Println("stale owner write:", storage.write(oldToken, "stale value"))
+	fmt.Println("stored value:", storage.value)
+	// Output:
+	// fencing enabled: true
+	// new owner write: true
+	// stale owner write: false
+	// stored value: new value
 }

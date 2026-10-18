@@ -34,9 +34,9 @@ func TestIntegrationRedisOwnershipAndExpiry(t *testing.T) {
 		t.Fatalf("connect to real Redis: %v", err)
 	}
 
-	ok, err := first.TryAcquire(ctx, key, "first", 5*time.Second)
+	ok, err := first.tryAcquire(ctx, key, "first", 5*time.Second)
 	requireResult(t, true, ok, err)
-	ok, err = second.TryAcquire(ctx, key, "second", time.Second)
+	ok, err = second.tryAcquire(ctx, key, "second", time.Second)
 	requireResult(t, false, ok, err)
 	ok, err = second.Renew(ctx, key, "second", time.Minute)
 	requireResult(t, false, ok, err)
@@ -62,7 +62,7 @@ func TestIntegrationRedisOwnershipAndExpiry(t *testing.T) {
 		t.Fatalf("expired key was revived: %d, %v", count, existsErr)
 	}
 
-	ok, err = second.TryAcquire(ctx, key, "second", 5*time.Second)
+	ok, err = second.tryAcquire(ctx, key, "second", 5*time.Second)
 	requireResult(t, true, ok, err)
 	ok, err = first.Renew(ctx, key, "first", time.Minute)
 	requireResult(t, false, ok, err)

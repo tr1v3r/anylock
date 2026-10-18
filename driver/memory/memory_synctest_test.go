@@ -65,7 +65,7 @@ func TestSynctestPostWaitExpiry(t *testing.T) {
 					var err error
 					switch operation {
 					case "acquire":
-						got, err = d.TryAcquire(context.Background(), "k", "b", time.Hour)
+						got, err = d.tryAcquire(context.Background(), "k", "b", time.Hour)
 					case "renew":
 						got, err = d.Renew(context.Background(), "k", "a", time.Hour)
 					case "release":
@@ -106,7 +106,7 @@ func TestSynctestPostWaitDeadlineDoesNotMutate(t *testing.T) {
 					var err error
 					switch operation {
 					case "acquire":
-						_, err = d.TryAcquire(ctx, "new", "b", time.Hour)
+						_, err = d.tryAcquire(ctx, "new", "b", time.Hour)
 					case "renew":
 						_, err = d.Renew(ctx, "k", "a", 2*time.Hour)
 					case "release":

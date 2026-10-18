@@ -27,7 +27,8 @@ same key contend. Reserve distinct prefixes/keys when their domains should diffe
 Each driver is a separate module. All three support both execution gates and
 leases; the backend determines where callers coordinate and how expiry is stored.
 The core and every driver have the same cooperative safety limits described
-[below](#safety-boundaries), including no fencing or exactly-once guarantee.
+[below](#safety-boundaries). Leases support [explicit fencing](docs/fencing.md);
+protected storage must validate tokens, and exactly-once execution is not promised.
 
 | Driver | Main dependencies and characteristics | Atomic operations and expiry | Suitable uses |
 | --- | --- | --- | --- |
@@ -368,8 +369,13 @@ separate live cleanup context. A failed release can leave ownership until TTL.
 ## Driver contract
 
 ```go
+type AcquireResult struct {
+    Acquired bool
+    Fence uint64 // zero for ordinary acquisition
+}
+
 type Driver interface {
-    TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
+    TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (AcquireResult, error)
     Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
     Release(ctx context.Context, key, owner string) (bool, error)
 }
@@ -379,9 +385,10 @@ Drivers must be concurrent-safe and honor operation deadlines. Acquisition of an
 absent/expired key, owner-checked renewal, and owner-checked release must each be
 atomic. Renew requires a live owner and cannot revive expired leases. Release
 checks owner, not expiry, and may delete an expired record that remains stored;
-stale owners cannot touch successors. TTLs must not be rounded down. False means
-contention/lost ownership for acquire/renew, or no matching stored record for
-release. Release's bool reports deletion, not prior validity; expired records may
+stale owners cannot touch successors. TTLs must not be rounded down.
+`AcquireResult.Acquired == false` means contention and requires a zero Fence.
+Ordinary acquisition returns Fence zero. Renewal/release retain their bool results.
+False means lost ownership for renew, or no matching stored record for release. Release's bool reports deletion, not prior validity; expired records may
 already have been reclaimed. Errors are failures with potentially ambiguous
 outcomes. A file driver needs real cross-process atomic coordination and
 expiration checks for acquisition/renewal; plain file read/write is insufficient.
@@ -393,16 +400,21 @@ keys. It accepts go-redis's normal/cluster clients through a small Do/Eval inter
 
 ## Safety boundaries
 
-Neither execution gates nor leases provide fencing, exactly-once execution, or a
-complete business-idempotency solution. An expired or paused owner can continue executing
+Leases carry fencing tokens only with `New(driver, WithFencing())`. Drivers must
+implement `FencingDriver`; unsupported drivers are rejected at construction.
+`token, enabled := lease.Fence()` exposes the immutable acquisition token.
+Renewal never changes it; an expired/released handle is never new authorization.
+`TryRun`/`Run` reject fencing because they do not expose a lease/token. See the
+[fencing contract, backend limits and migration guide](docs/fencing.md).
+
+Neither mode provides exactly-once execution or a complete business-idempotency solution. An expired or paused owner can continue executing
 application code; cancellation cannot forcibly stop it or undo side effects.
 For correctness-critical external mutations, the target resource needs fencing,
 transactions, unique constraints, or another independent safety mechanism.
 
 Redis asynchronous failover may lose an acknowledged lock; clock changes,
 partitions and process pauses also affect the safety model. No Redlock/quorum
-algorithm, reentrancy, fairness, multi-key transactions, or fencing tokens are
-provided. Core abstractions do not strengthen a backend's actual guarantees.
+algorithm, reentrancy, fairness, or multi-key transactions are provided. Core abstractions do not strengthen a backend's actual guarantees.
 
 ## Executable examples
 

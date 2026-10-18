@@ -12,7 +12,8 @@
 // after locking the row, so a row-lock wait cannot revive an expired lease.
 // Release deletes a matching owner's row regardless of expiry; its atomic owner
 // check protects successors. TTLs round up to microseconds. The driver does not
-// start workers, close connections, strengthen failover guarantees, or provide fencing.
+// start workers, close connections, or strengthen failover guarantees. Optional
+// fencing uses a permanent ascending CACHE 1 sequence, allocated after acquisition.
 package postgres
 
 import (
@@ -56,12 +57,13 @@ const releaseSQL = `DELETE FROM %s WHERE key = $1 AND owner = $2`
 // Construct it with New; its zero value is not usable. It is safe for concurrent
 // use. Only *sql.DB is accepted, not an externally managed long-lived transaction.
 type Driver struct {
-	db     *sql.DB
-	prefix string
-	table  string
+	db       *sql.DB
+	prefix   string
+	table    string
+	sequence string
 }
 
-var _ anylock.Driver = (*Driver)(nil)
+var _ anylock.FencingDriver = (*Driver)(nil)
 
 // Option configures a Driver before it is shared.
 type Option func(*Driver) error
@@ -92,7 +94,7 @@ func New(db *sql.DB, prefix string, options ...Option) (*Driver, error) {
 	if !validText(prefix) {
 		return nil, errors.New("anylock/postgres: prefix must be valid UTF-8 without NUL")
 	}
-	d := &Driver{db: db, prefix: prefix, table: `"public"."anylock_leases"`}
+	d := &Driver{db: db, prefix: prefix, table: `"public"."anylock_leases"`, sequence: `"public"."anylock_fences"`}
 	for _, option := range options {
 		if option == nil {
 			return nil, errors.New("anylock/postgres: nil option")
@@ -119,15 +121,16 @@ func (d *Driver) EnsureSchema(ctx context.Context) error {
 
 // TryAcquire atomically reserves an absent/expired key. An unexpired row is busy
 // even if its owner matches. Data values are bound parameters, never SQL text.
-func (d *Driver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+func (d *Driver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (anylock.AcquireResult, error) {
 	if err := d.validate(ctx, key, owner); err != nil {
-		return false, err
+		return anylock.AcquireResult{}, err
 	}
 	interval, err := ttlInterval(ttl)
 	if err != nil {
-		return false, err
+		return anylock.AcquireResult{}, err
 	}
-	return d.exec(ctx, "acquire", fmt.Sprintf(acquireSQL, d.table), d.prefix+key, owner, interval)
+	ok, err := d.exec(ctx, "acquire", fmt.Sprintf(acquireSQL, d.table), d.prefix+key, owner, interval)
+	return anylock.AcquireResult{Acquired: ok}, err
 }
 
 // Renew atomically extends only the unexpired matching owner by ttl, measured
@@ -265,4 +268,68 @@ func ttlInterval(ttl time.Duration) (string, error) {
 	seconds := microseconds / 1_000_000 % 60
 	return fmt.Sprintf("%d hours %d minutes %d seconds %d microseconds",
 		hours, minutes, seconds, microseconds%1_000_000), nil
+}
+
+// WithFenceSequence selects the permanent sequence used for fenced acquisitions.
+// Names follow WithTable rules. It must be ascending, NO CYCLE, CACHE 1, and must
+// never be reset/replaced while any token can remain in downstream storage.
+func WithFenceSequence(name string) Option {
+	return func(d *Driver) error {
+		sequence, err := quoteTable(name)
+		if err != nil {
+			return err
+		}
+		d.sequence = sequence
+		return nil
+	}
+}
+
+// EnsureFencingSchema explicitly provisions the fencing sequence in addition to
+// EnsureSchema's lease table. Existing objects are not migrated or validated.
+// Provision through a serialized production migration with CACHE 1, NO CYCLE.
+func (d *Driver) EnsureFencingSchema(ctx context.Context) error {
+	if err := d.EnsureSchema(ctx); err != nil {
+		return err
+	}
+	query := "CREATE SEQUENCE IF NOT EXISTS " + d.sequence + " AS bigint NO CYCLE CACHE 1"
+	_, err := d.exec(ctx, "fencing schema", query)
+	return err
+}
+
+// TryAcquireFenced allocates nextval only AFTER acquisition, while the modifying
+// CTE still holds the lease row lock. Allocating in INSERT's VALUES before an
+// ON CONFLICT wait could grant an older token to a newer owner. Sequence gaps
+// (including aborted operations) are harmless. Missing sequence is an error.
+func (d *Driver) TryAcquireFenced(
+	ctx context.Context, key, owner string, ttl time.Duration,
+) (anylock.AcquireResult, error) {
+	if err := d.validate(ctx, key, owner); err != nil {
+		return anylock.AcquireResult{}, err
+	}
+	interval, err := ttlInterval(ttl)
+	if err != nil {
+		return anylock.AcquireResult{}, err
+	}
+	query := "WITH acquired AS (" + fmt.Sprintf(acquireSQL, d.table) +
+		" RETURNING key) SELECT pg_catalog.nextval($4::pg_catalog.regclass) FROM acquired"
+	request, cancel := operationContext(ctx)
+	defer cancel()
+	if contextErr := requestError(request); contextErr != nil {
+		return anylock.AcquireResult{}, contextErr
+	}
+	var token int64
+	err = d.db.QueryRowContext(request, query, d.prefix+key, owner, interval, d.sequence).Scan(&token)
+	if requestErr := requestError(request); requestErr != nil {
+		return anylock.AcquireResult{}, errors.Join(err, requestErr)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return anylock.AcquireResult{}, nil
+	}
+	if err != nil {
+		return anylock.AcquireResult{}, fmt.Errorf("anylock/postgres: fenced acquire: %w", err)
+	}
+	if token <= 0 {
+		return anylock.AcquireResult{}, errors.New("anylock/postgres: invalid fencing token")
+	}
+	return anylock.AcquireResult{Acquired: true, Fence: uint64(token)}, nil
 }

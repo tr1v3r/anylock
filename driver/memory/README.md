@@ -49,14 +49,15 @@ is safe for concurrent use but must not be copied. It has no `Close` method.
   Compose application namespaces into the logical key instead.
 
 This is not a distributed lock: different processes, restarted processes, and
-separate Driver instances do not coordinate. There is no persistence, fencing,
+separate Driver instances do not coordinate. There is no persistence,
 exactly-once execution, or durable business idempotency. Process pauses and the
 platform's monotonic-clock behavior (notably system sleep) remain relevant.
 
 ## Atomic operations and TTLs
 
-`TryAcquire` creates an absent/expired lease, but returns `false, nil` for any live
-lease, **including the same owner**. `Renew` resets only the matching live owner's
+`TryAcquire` creates an absent/expired lease, but returns a zero `AcquireResult`
+for any live lease, **including the same owner**. Ordinary success returns
+`AcquireResult{Acquired: true}` with Fence zero. `Renew` resets only the matching live owner's
 TTL from the current operation; a shorter TTL may shorten ownership. It never
 creates or revives an expired lease. `Release` deletes a stored record only when
 its owner matches, without requiring remaining validity. Operations sweep expired
@@ -249,3 +250,14 @@ GitHub only discovers a **new manual workflow after its file lands on the defaul
 branch**. Before merge, do not claim a successful manual dispatch of this new file:
 use the PR smoke plus a separately recorded sustained local run as current evidence.
 A green short smoke alone is not sustained-load evidence.
+
+## Explicit fencing
+
+Use `anylock.New(driver, anylock.WithFencing())`. Successful fenced acquisitions
+use an instance-wide `uint64` counter under the same gate as ownership. Renewals
+do not increment it; release/expiry/sweeping never reset it. Exhaustion errors
+before installing a new lease. Tokens are meaningful only while sharing the same
+Driver instance; replacing/restarting it resets the sequence.
+
+Read [the shared fencing contract](../../docs/fencing.md): business storage must
+atomically validate `Lease.Fence()` with protected writes.
