@@ -146,11 +146,11 @@ func TestIntegrationPostgresOwnershipAndExpiry(t *testing.T) {
 	if err := first.EnsureSchema(f.ctx); err != nil {
 		t.Fatalf("EnsureSchema must be idempotent: %v", err)
 	}
-	ok, err := first.TryAcquire(f.ctx, "key", "old", time.Second)
+	ok, err := first.tryAcquire(f.ctx, "key", "old", time.Second)
 	requireResult(t, true, ok, err)
 	_, originalExpiry := f.row(t, "key")
 	for _, owner := range []string{"old", "other"} {
-		ok, err = second.TryAcquire(f.ctx, "key", owner, time.Hour)
+		ok, err = second.tryAcquire(f.ctx, "key", owner, time.Hour)
 		requireResult(t, false, ok, err)
 	}
 	ok, err = second.Renew(f.ctx, "key", "other", time.Hour)
@@ -185,7 +185,7 @@ func TestIntegrationPostgresOwnershipAndExpiry(t *testing.T) {
 	f.requireAbsent(t, "key")
 	ok, err = first.Release(f.ctx, "key", "old")
 	requireResult(t, false, ok, err)
-	ok, err = second.TryAcquire(f.ctx, "key", "successor", time.Second)
+	ok, err = second.tryAcquire(f.ctx, "key", "successor", time.Second)
 	requireResult(t, true, ok, err)
 	_, successorExpiry := f.row(t, "key")
 	ok, err = first.Renew(f.ctx, "key", "old", time.Hour)
@@ -214,7 +214,7 @@ func TestIntegrationPostgresIndependentKeysAndPrefixes(t *testing.T) {
 		d   *Driver
 		key string
 	}{{f.driver, "a"}, {f.driver, "b"}, {other, "a"}} {
-		ok, err := pair.d.TryAcquire(f.ctx, pair.key, "owner", time.Second)
+		ok, err := pair.d.tryAcquire(f.ctx, pair.key, "owner", time.Second)
 		requireResult(t, true, ok, err)
 	}
 	ok, err := f.driver.Release(f.ctx, "a", "owner")
@@ -232,7 +232,7 @@ func TestIntegrationPostgresTextInjectionAndMaximumTTL(t *testing.T) {
 	f := realPostgres(t)
 	const payload = "'; SELECT pg_sleep(10); --"
 	d := f.anotherDriver(t, f.prefix+payload)
-	ok, err := d.TryAcquire(f.ctx, payload, payload, time.Second)
+	ok, err := d.tryAcquire(f.ctx, payload, payload, time.Second)
 	requireResult(t, true, ok, err)
 	ok, err = d.Renew(f.ctx, payload, payload, time.Second)
 	requireResult(t, true, ok, err)
@@ -243,7 +243,7 @@ func TestIntegrationPostgresTextInjectionAndMaximumTTL(t *testing.T) {
 	// driver's exact, decomposed representation must also work on the server,
 	// without converting nanoseconds through floating point or overflowing.
 	const maximumTTL time.Duration = 1<<63 - 1
-	ok, err = f.driver.TryAcquire(f.ctx, "maximum", "owner", maximumTTL)
+	ok, err = f.driver.tryAcquire(f.ctx, "maximum", "owner", maximumTTL)
 	requireResult(t, true, ok, err)
 	ok, err = f.driver.Renew(f.ctx, "maximum", "owner", maximumTTL)
 	requireResult(t, true, ok, err)
@@ -288,7 +288,7 @@ func (f *postgresFixture) holdRow(t *testing.T, key string, ttl time.Duration) (
 	if queryErr := tx.QueryRowContext(f.ctx, `SELECT pg_backend_pid(), CURRENT_TIMESTAMP`).Scan(&pid, &began); queryErr != nil {
 		t.Fatal(queryErr)
 	}
-	ok, err := f.driver.TryAcquire(f.ctx, key, "owner", ttl)
+	ok, err := f.driver.tryAcquire(f.ctx, key, "owner", ttl)
 	requireResult(t, true, ok, err)
 	var expires time.Time
 	if queryErr := tx.QueryRowContext(f.ctx, `SELECT expires_at FROM `+f.quotedTable()+` WHERE key = $1 FOR UPDATE`, f.prefix+key).Scan(&expires); queryErr != nil {
@@ -368,7 +368,7 @@ func TestIntegrationPostgresExpiryDuringRowLockWait(t *testing.T) {
 				ok, err := f.driver.Release(f.ctx, "blocked", "owner")
 				requireResult(t, false, ok, err)
 			}
-			ok, err := f.driver.TryAcquire(f.ctx, "blocked", "successor", time.Second)
+			ok, err := f.driver.tryAcquire(f.ctx, "blocked", "successor", time.Second)
 			requireResult(t, true, ok, err)
 			ok, err = f.driver.Release(f.ctx, "blocked", "owner")
 			requireResult(t, false, ok, err)
@@ -383,7 +383,7 @@ func TestIntegrationPostgresWaiterRechecksCommittedSuccessor(t *testing.T) {
 	for _, name := range []string{"acquire", "renew", "release"} {
 		t.Run(name, func(t *testing.T) {
 			f := realPostgres(t)
-			ok, err := f.driver.TryAcquire(f.ctx, "successor", "old", 5*time.Second)
+			ok, err := f.driver.tryAcquire(f.ctx, "successor", "old", 5*time.Second)
 			requireResult(t, true, ok, err)
 			tx, err := f.db.BeginTx(f.ctx, nil)
 			if err != nil {
@@ -410,7 +410,7 @@ func TestIntegrationPostgresWaiterRechecksCommittedSuccessor(t *testing.T) {
 				var err error
 				switch name {
 				case "acquire":
-					ok, err = f.driver.TryAcquire(f.ctx, "successor", "old", time.Hour)
+					ok, err = f.driver.tryAcquire(f.ctx, "successor", "old", time.Hour)
 				case "renew":
 					ok, err = f.driver.Renew(f.ctx, "successor", "old", time.Hour)
 				case "release":
@@ -507,7 +507,7 @@ func TestIntegrationPostgresCoreRejectsAcquisitionAfterTTLSpentWaiting(t *testin
 			case <-f.ctx.Done():
 				t.Fatal(f.ctx.Err())
 			}
-			ok, err := f.driver.TryAcquire(f.ctx, "late", "successor", time.Second)
+			ok, err := f.driver.tryAcquire(f.ctx, "late", "successor", time.Second)
 			requireResult(t, true, ok, err)
 		})
 	}
@@ -531,7 +531,7 @@ func TestIntegrationPostgresBlockedOperationsHonorDeadline(t *testing.T) {
 				var err error
 				switch name {
 				case "acquire":
-					ok, err = f.driver.TryAcquire(ctx, "deadline", "intruder", time.Hour)
+					ok, err = f.driver.tryAcquire(ctx, "deadline", "intruder", time.Hour)
 				case "renew":
 					ok, err = f.driver.Renew(ctx, "deadline", "owner", time.Hour)
 				case "release":
@@ -572,7 +572,7 @@ func TestIntegrationPostgresBlockedOperationsHonorDeadline(t *testing.T) {
 
 func TestIntegrationPostgresPoolExhaustionHonorsDeadline(t *testing.T) {
 	f := realPostgres(t)
-	ok, err := f.driver.TryAcquire(f.ctx, "pool", "owner", 5*time.Second)
+	ok, err := f.driver.tryAcquire(f.ctx, "pool", "owner", 5*time.Second)
 	requireResult(t, true, ok, err)
 	_, expires := f.row(t, "pool")
 	f.db.SetMaxOpenConns(1)
@@ -590,7 +590,7 @@ func TestIntegrationPostgresPoolExhaustionHonorsDeadline(t *testing.T) {
 			var callErr error
 			switch name {
 			case "acquire":
-				ok, callErr = f.driver.TryAcquire(ctx, "pool", "intruder", time.Hour)
+				ok, callErr = f.driver.tryAcquire(ctx, "pool", "intruder", time.Hour)
 			case "renew":
 				ok, callErr = f.driver.Renew(ctx, "pool", "owner", time.Hour)
 			case "release":
@@ -707,7 +707,7 @@ func TestIntegrationPostgresCoreLeaseAutoRenewAndRelease(t *testing.T) {
 		t.Fatal("auto-renew lease lost validity", lease.Err())
 	default:
 	}
-	ok, err := f.driver.TryAcquire(f.ctx, "automatic", "competitor", ttl)
+	ok, err := f.driver.tryAcquire(f.ctx, "automatic", "competitor", ttl)
 	requireResult(t, false, ok, err)
 	if got, _ := f.row(t, "automatic"); got != owner {
 		t.Fatal("competitor replaced renewed owner", got)
@@ -720,6 +720,6 @@ func TestIntegrationPostgresCoreLeaseAutoRenewAndRelease(t *testing.T) {
 	default:
 		t.Fatal("explicit Release did not close Done")
 	}
-	ok, err = f.driver.TryAcquire(f.ctx, "automatic", "successor", time.Second)
+	ok, err = f.driver.tryAcquire(f.ctx, "automatic", "successor", time.Second)
 	requireResult(t, true, ok, err)
 }

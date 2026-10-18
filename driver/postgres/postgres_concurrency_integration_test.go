@@ -34,7 +34,7 @@ func postgresAcquisitionWave(t *testing.T, f *postgresFixture, key, tokenPrefix 
 			<-start
 			// f.ctx has an explicit overall deadline, avoiding the driver's
 			// default one-second timeout under a 1024-contender queue.
-			ok, err := f.driver.TryAcquire(f.ctx, key, owner, postgresLoadTTL)
+			ok, err := f.driver.tryAcquire(f.ctx, key, owner, postgresLoadTTL)
 			results <- result{owner, ok, err}
 		}()
 	}
@@ -92,7 +92,7 @@ func TestIntegrationPostgresConcurrentMixedChurn(t *testing.T) {
 func TestIntegrationPostgresConcurrentExpiryTakeovers(t *testing.T) {
 	f := realPostgres(t)
 	owner := "initial-owner"
-	ok, err := f.driver.TryAcquire(f.ctx, "expiry", owner, 40*time.Millisecond)
+	ok, err := f.driver.tryAcquire(f.ctx, "expiry", owner, 40*time.Millisecond)
 	requireResult(t, true, ok, err)
 	for phase := range 3 {
 		_, expires := f.row(t, "expiry")
@@ -119,7 +119,7 @@ func TestIntegrationPostgresConcurrentExpiryTakeovers(t *testing.T) {
 func TestIntegrationPostgresConcurrentExpiredOwnerCleanup(t *testing.T) {
 	f := realPostgres(t)
 	const key = "expired-cleanup"
-	ok, err := f.driver.TryAcquire(f.ctx, key, "expired-owner", 40*time.Millisecond)
+	ok, err := f.driver.tryAcquire(f.ctx, key, "expired-owner", 40*time.Millisecond)
 	requireResult(t, true, ok, err)
 	_, expires := f.row(t, key)
 	f.waitExpired(t, expires)
@@ -178,7 +178,7 @@ func TestIntegrationPostgresManyExpiredKeys(t *testing.T) {
 	const keys = 64
 	for i := range keys {
 		key := fmt.Sprintf("batch-%d", i)
-		ok, err := f.driver.TryAcquire(f.ctx, key, "predecessor", 80*time.Millisecond)
+		ok, err := f.driver.tryAcquire(f.ctx, key, "predecessor", 80*time.Millisecond)
 		requireResult(t, true, ok, err)
 	}
 	var lastExpiry time.Time
@@ -209,7 +209,7 @@ func TestIntegrationPostgresManyExpiredKeys(t *testing.T) {
 				var err error
 				switch operation {
 				case 0, 1:
-					ok, err = f.driver.TryAcquire(f.ctx, key, owner, postgresLoadTTL)
+					ok, err = f.driver.tryAcquire(f.ctx, key, owner, postgresLoadTTL)
 				case 2:
 					ok, err = f.driver.Renew(f.ctx, key, "predecessor", postgresLoadTTL)
 				case 3:
@@ -254,7 +254,7 @@ func TestIntegrationPostgresManyExpiredKeys(t *testing.T) {
 
 func TestIntegrationPostgresManyCanceledPoolWaiters(t *testing.T) {
 	f := realPostgres(t)
-	ok, err := f.driver.TryAcquire(f.ctx, "pool", "owner", postgresLoadTTL)
+	ok, err := f.driver.tryAcquire(f.ctx, "pool", "owner", postgresLoadTTL)
 	requireResult(t, true, ok, err)
 	_, expires := f.row(t, "pool")
 	f.db.SetMaxOpenConns(1)

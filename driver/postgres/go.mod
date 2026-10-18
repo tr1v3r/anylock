@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/jackc/pgx/v5 v5.7.6
-	github.com/tr1v3r/anylock v0.1.0
+	github.com/tr1v3r/anylock v0.3.0
 )
 
 require (
