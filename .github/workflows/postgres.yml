@@ -5,6 +5,10 @@ on:
     branches: [master]
   pull_request:
 
+# Validate each module against its declared released dependencies during API migrations.
+env:
+  GOWORK: 'off'
+
 jobs:
   postgres:
     name: PostgreSQL ${{ matrix.postgres }} (Go ${{ matrix.go }})
@@ -33,14 +37,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
-      - name: Test real PostgreSQL owner, expiry, and deadline behavior
+      - name: Test real PostgreSQL against declared core dependency
         env:
           ANYLOCK_POSTGRES_DSN: postgres://anylock:anylock-test-only@127.0.0.1:5432/anylock?sslmode=disable
-        working-directory: driver/postgres
-        run: go test -race -count=1 -tags=integration ./...
-      - name: Test real PostgreSQL with the published core pin
-        env:
-          ANYLOCK_POSTGRES_DSN: postgres://anylock:anylock-test-only@127.0.0.1:5432/anylock?sslmode=disable
-          GOWORK: 'off'
         working-directory: driver/postgres
         run: go test -race -count=1 -tags=integration ./...

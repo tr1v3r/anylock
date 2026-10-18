@@ -49,7 +49,7 @@ func TestAcquireRejectsLateReplies(t *testing.T) {
 								t.Fatal("late contention reply was retried")
 							}
 							if acquired {
-								if ok, err := memory.TryAcquire(request, key, owner, ttl); !ok || err != nil {
+								if ok, err := memory.tryAcquire(request, key, owner, ttl); !ok || err != nil {
 									t.Fatal("failed to install remote lease", ok, err)
 								}
 							}

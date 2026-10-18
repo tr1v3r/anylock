@@ -23,6 +23,10 @@ on:
 permissions:
   contents: read
 
+# Validate each module against its declared released dependencies during API migrations.
+env:
+  GOWORK: 'off'
+
 jobs:
   postgres-stress:
     name: PostgreSQL 16 race-enabled diagnostics

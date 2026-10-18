@@ -77,7 +77,7 @@ func TestRunConcurrentLockersShareWindowAndIndependentKeys(t *testing.T) {
 	var callbacks, acquisitions atomic.Int32
 	driver := hookedDriver{Driver: memory, acquire: func(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 		acquisitions.Add(1)
-		return memory.TryAcquire(ctx, key, owner, ttl)
+		return memory.tryAcquire(ctx, key, owner, ttl)
 	}}
 	const contenders = 32
 	lockers := make([]*Locker, contenders)
@@ -196,7 +196,7 @@ func TestRunReturnsOriginalCallbackErrorAndRetainsMarker(t *testing.T) {
 						if attempts > 1 {
 							return false, failure
 						}
-						return memory.TryAcquire(ctx, key, owner, ttl)
+						return memory.tryAcquire(ctx, key, owner, ttl)
 					},
 					renew: func(context.Context, string, string, time.Duration) (bool, error) {
 						t.Error("execution entry renewed marker")
@@ -356,7 +356,7 @@ func TestRunLateAcquisitionDoesNotExecuteOrCleanUp(t *testing.T) {
 				driver := hookedDriver{
 					Driver: memory,
 					acquire: func(request context.Context, key, owner string, ttl time.Duration) (bool, error) {
-						acquired, err := memory.TryAcquire(request, key, owner, ttl)
+						acquired, err := memory.tryAcquire(request, key, owner, ttl)
 						if err != nil || !acquired {
 							t.Fatal("failed to install remote marker", acquired, err)
 						}

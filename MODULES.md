@@ -72,3 +72,15 @@ for example `go get github.com/tr1v3r/anylock/driver/redis@<version>`.
 When adding a module, add it to `go.work` and the lint matrix in CI. The test script
 discovers its `go.mod` automatically. Include its own license notice, pin a
 compatible core version, and keep backend-specific test dependencies local.
+
+## Core v0.3 migration
+
+The core changes `Driver.TryAcquire` to `AcquireRequest` / `AcquireResult` and adds
+`Lease.FencingToken`. Drivers migrate in separate PRs after the core release.
+Until all driver sources and integration pins have migrated, `go.work` combines
+incompatible API generations. CI therefore runs every module with `GOWORK=off`,
+including real backend and stress tests, against its declared released dependencies.
+The core is tested directly and remains standard-library-only. No module checks
+are skipped and no local-path replacements are distributed. After the driver
+releases, update integration pins and restore workspace checks alongside the
+independent-module checks.
