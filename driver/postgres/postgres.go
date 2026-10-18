@@ -122,16 +122,17 @@ func (d *Driver) EnsureSchema(ctx context.Context) error {
 // TryAcquire atomically reserves an absent/expired key. An unexpired row is busy
 // even if its owner matches. Data values are bound parameters, never SQL text.
 func (d *Driver) TryAcquire(
-	ctx context.Context, key, owner string, opts anylock.AcquireOptions,
+	ctx context.Context, req anylock.AcquireRequest,
 ) (anylock.AcquireResult, error) {
+	key, owner := req.Key, req.Owner
 	if err := d.validate(ctx, key, owner); err != nil {
 		return anylock.AcquireResult{}, err
 	}
-	interval, err := ttlInterval(opts.TTL)
+	interval, err := ttlInterval(req.TTL)
 	if err != nil {
 		return anylock.AcquireResult{}, err
 	}
-	if opts.Fencing {
+	if req.Fencing {
 		return d.acquireFenced(ctx, key, owner, interval)
 	}
 	ok, err := d.exec(ctx, "acquire", fmt.Sprintf(acquireSQL, d.table), d.prefix+key, owner, interval)
@@ -329,5 +330,5 @@ func (d *Driver) acquireFenced(
 	if token <= 0 {
 		return anylock.AcquireResult{}, errors.New("anylock/postgres: invalid fencing token")
 	}
-	return anylock.AcquireResult{Acquired: true, Token: uint64(token)}, nil
+	return anylock.AcquireResult{Acquired: true, FencingToken: uint64(token)}, nil
 }

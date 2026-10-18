@@ -21,11 +21,11 @@ type Lease interface {
 	// Key returns the logical key, without any driver's namespace prefix.
 	Key() string
 
-	// Fence returns the immutable token from this acquisition, and whether fencing
+	// FencingToken returns the immutable token from this acquisition, and whether fencing
 	// was enabled. It remains available after expiry/release for diagnostics, but
 	// is never fresh authorization. Check Err/Done and stop work on invalidation.
 	// The target storage must atomically validate the token with each write.
-	Fence() (token uint64, enabled bool)
+	FencingToken() (token uint64, enabled bool)
 
 	// Context returns a context canceled on local lease invalidation. Pass it to
 	// cooperative protected work; use Err for the terminal lease cause. Its Deadline
@@ -116,8 +116,8 @@ func newLease(
 // Key returns the logical key, without any driver's namespace prefix.
 func (l *lease) Key() string { return l.key }
 
-// Fence returns this acquisition's immutable token, even after local invalidation.
-func (l *lease) Fence() (uint64, bool) { return l.fence, l.fence != 0 }
+// FencingToken returns this acquisition's immutable token, even after local invalidation.
+func (l *lease) FencingToken() (uint64, bool) { return l.fence, l.fence != 0 }
 
 // Context returns a context canceled on local lease invalidation. Pass it to
 // cooperative protected work; use Err for the terminal lease cause. Its Deadline

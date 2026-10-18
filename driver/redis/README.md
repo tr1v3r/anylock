@@ -41,23 +41,51 @@ each selected release line. The PostgreSQL workflow similarly covers majors
 
 ## Explicit fencing
 
-Use `anylock.New(driver, anylock.WithFencing())`. Fenced acquisition uses one
-`TryAcquire` call with `AcquireOptions.Fencing` set, using a Lua script to check
-the lease, INCR a persistent per-key counter, and install
-ownership. The counter key is `<prefix><key>:__anylock_fence`; the suffix is
-reserved and rejected as a logical lease key, even for ordinary operations.
-Reserve the entire physical namespace across applications/prefixes. Counter keys
-never expire and must not be purged/evicted/restored to older values.
+Use `anylock.New(driver, anylock.WithFencing())`. The core passes
+`AcquireRequest{Key: key, Owner: owner, TTL: ttl, Fencing: true}` to `TryAcquire`. One Lua script
+checks the lock, increments a persistent counter, installs the owner with TTL,
+and returns the exact counter string. Owner strings still control renewal and
+release; fencing tokens never replace owners.
 
-Redis Cluster requires a nonempty hash tag (for example prefix `{locks}:`) so
-lease and counter keys share a slot. A missing tag may cause CROSSSLOT errors;
-there is no fallback. Values are returned as exact decimal strings to avoid Lua
-number rounding above 2^53. The supported range is 1 through MaxInt64; exhaustion
-fails without installing a lease. Contention and renewal do not increment it.
+Every operation uses this physical-key format, including ordinary acquisition:
+
+```text
+namespace = hex(prefix + logicalKey)          # lowercase hex of the raw bytes
+lease     = {anylock:<namespace>}:lease
+counter   = {anylock:<namespace>}:fence
+```
+
+The driver generates the hash tag automatically; callers do not need to embed
+one. Prefixes and logical keys containing braces, empty tags or binary bytes are
+encoded, so they cannot override the tag or collide with the counter namespace.
+Ordinary/fenced acquisition, renewal and release use the same lease key. Changing
+this format is a lock-domain migration; drain old-domain owners before cutover.
+Reserve the encoded physical namespace from external writes.
+
+Counter keys never expire and are not removed by release or lease expiry. They
+must not be purged/evicted/restored to older values. Values are returned as exact
+decimal strings to avoid Lua number rounding above 2^53. The supported range is
+1 through MaxInt64; exhaustion fails without installing a lease. Contention and
+renewal do not increment the counter.
 
 Asynchronous replication/failover, eviction, FLUSH, snapshot rollback, or manual
 resets can repeat/regress tokens. This driver cannot promise failover-safe fencing
-on such a deployment. Choose a backend/fault model that preserves counter history.
+on such a deployment. Read the [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)
+for hash-slot and asynchronous-replication limits.
+
+Real three-master Cluster tests run on Go 1.24/stable in CI, including same-slot
+Lua execution, special-character namespaces, precision and mixed ordinary/fenced
+ownership. To run locally with Docker:
+
+```sh
+./scripts/redis-cluster.sh start anylock-test-cluster
+ANYLOCK_REDIS_CLUSTER_ADDRS=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002 \
+  ./scripts/modules.sh go test -race -tags=integration -run '^TestIntegrationRedisClusterFencing$' ./...
+./scripts/redis-cluster.sh stop anylock-test-cluster
+```
+
+Run those commands from the repository root. The fixture binds only loopback
+client ports, uses no host-mounted data and removes only its named container.
 
 Read [the shared fencing contract](../../docs/fencing.md): business storage must
-atomically validate `Lease.Fence()` with protected writes.
+atomically validate `Lease.FencingToken()` with protected writes.

@@ -474,11 +474,12 @@ func TestReleaseCleanupStopsAutoRenewBeforeRetry(t *testing.T) {
 	assertCleanupInvalid(t, lease, anylock.ErrClosed)
 }
 
-func (d *cleanupDriver) TryAcquire(ctx context.Context, key, owner string, opts anylock.AcquireOptions) (anylock.AcquireResult, error) {
-	if opts.Fencing {
+func (d *cleanupDriver) TryAcquire(ctx context.Context, req anylock.AcquireRequest) (anylock.AcquireResult, error) {
+	key, owner := req.Key, req.Owner
+	if req.Fencing {
 		return anylock.AcquireResult{}, anylock.ErrFencingUnsupported
 	}
-	ttl := opts.TTL
+	ttl := req.TTL
 	ok, err := d.tryAcquire(ctx, key, owner, ttl)
 	return anylock.AcquireResult{Acquired: ok}, err
 }

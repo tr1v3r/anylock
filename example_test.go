@@ -28,7 +28,7 @@ func newExampleDriver() *exampleDriver {
 }
 
 func (d *exampleDriver) tryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
-	result, err := d.TryAcquire(ctx, key, owner, anylock.AcquireOptions{TTL: ttl})
+	result, err := d.TryAcquire(ctx, anylock.AcquireRequest{Key: key, Owner: owner, TTL: ttl})
 	return result.Acquired, err
 }
 
@@ -346,8 +346,9 @@ func ExampleLease_Context() {
 }
 
 func (d *exampleDriver) TryAcquire(
-	ctx context.Context, key, owner string, opts anylock.AcquireOptions,
+	ctx context.Context, req anylock.AcquireRequest,
 ) (anylock.AcquireResult, error) {
+	key, owner := req.Key, req.Owner
 	if err := ctx.Err(); err != nil {
 		return anylock.AcquireResult{}, err
 	}
@@ -357,12 +358,12 @@ func (d *exampleDriver) TryAcquire(
 		return anylock.AcquireResult{}, nil
 	}
 	var token uint64
-	if opts.Fencing {
+	if req.Fencing {
 		d.fence++ // Example fixture only; built-in drivers also reject counter exhaustion.
 		token = d.fence
 	}
-	d.records[key] = exampleRecord{owner, time.Now().Add(opts.TTL)}
-	return anylock.AcquireResult{Acquired: true, Token: token}, nil
+	d.records[key] = exampleRecord{owner, time.Now().Add(req.TTL)}
+	return anylock.AcquireResult{Acquired: true, FencingToken: token}, nil
 }
 
 // fencedStorage models a single protected resource. A real database performs
@@ -390,7 +391,7 @@ func ExampleWithFencing() {
 	if err != nil {
 		panic(err)
 	}
-	oldToken, enabled := first.Fence()
+	oldToken, enabled := first.FencingToken()
 	fmt.Println("fencing enabled:", enabled)
 	releaseExampleLease(first)
 
@@ -399,7 +400,7 @@ func ExampleWithFencing() {
 		panic(err)
 	}
 	defer releaseExampleLease(second)
-	newToken, _ := second.Fence()
+	newToken, _ := second.FencingToken()
 	storage := new(fencedStorage)
 	fmt.Println("new owner write:", storage.write(newToken, "new value"))
 	// Simulate an old in-flight write arriving after storage accepted the new owner.

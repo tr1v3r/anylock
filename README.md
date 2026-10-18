@@ -369,18 +369,20 @@ separate live cleanup context. A failed release can leave ownership until TTL.
 ## Driver contract
 
 ```go
-type AcquireOptions struct {
+type AcquireRequest struct {
+    Key string
+    Owner string
     TTL time.Duration
     Fencing bool
 }
 
 type AcquireResult struct {
     Acquired bool
-    Token uint64 // zero for ordinary acquisition
+    FencingToken uint64 // zero for ordinary acquisition
 }
 
 type Driver interface {
-    TryAcquire(ctx context.Context, key, owner string, opts AcquireOptions) (AcquireResult, error)
+    TryAcquire(ctx context.Context, req AcquireRequest) (AcquireResult, error)
     Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
     Release(ctx context.Context, key, owner string) (bool, error)
 }
@@ -391,8 +393,9 @@ absent/expired key, owner-checked renewal, and owner-checked release must each b
 atomic. Renew requires a live owner and cannot revive expired leases. Release
 checks owner, not expiry, and may delete an expired record that remains stored;
 stale owners cannot touch successors. TTLs must not be rounded down.
-`AcquireResult.Acquired == false` means contention and requires a zero Token.
-Ordinary acquisition returns Token zero. Renewal/release retain their bool results.
+`AcquireResult.Acquired == false` means contention and requires a zero FencingToken.
+Ordinary acquisition returns FencingToken zero. Renewal/release retain their bool
+results.
 False means lost ownership for renew, or no matching stored record for release. Release's bool reports deletion, not prior validity; expired records may
 already have been reclaimed. Errors are failures with potentially ambiguous
 outcomes. A file driver needs real cross-process atomic coordination and
@@ -400,19 +403,23 @@ expiration checks for acquisition/renewal; plain file read/write is insufficient
 
 The Redis driver uses one `SET ... NX PX ...`, and Lua owner-check-plus-`PEXPIRE`
 or owner-check-plus-`DEL`. Sub-millisecond TTLs round up, never down. Prefixes are
-concatenated literally; reserve a namespace and avoid collisions with unrelated
-keys. It accepts go-redis's normal/cluster clients through a small Do/Eval interface.
+combined with logical keys and hex-encoded into automatic Redis hash tags.
+Lease and persistent counter keys share a slot in every mode; reserve that
+encoded namespace from unrelated writes. It accepts go-redis's normal/cluster
+clients through a small Do/Eval interface.
 
 ## Safety boundaries
 
 Leases carry fencing tokens only with `New(driver, WithFencing())`. The core
-passes `AcquireOptions{TTL: ttl, Fencing: true}` to the same `Driver.TryAcquire`
+passes `AcquireRequest{Key: key, Owner: owner, TTL: ttl, Fencing: true}` to
+`Driver.TryAcquire`, the same entry point
 used for ordinary locks. A driver that does not support fencing must return
 `ErrFencingUnsupported` without granting ownership. Construction does not probe
 driver capabilities; unsupported fencing is reported when acquiring.
-`token, enabled := lease.Fence()` exposes the immutable acquisition token.
+`token, enabled := lease.FencingToken()` exposes the immutable acquisition token.
 Renewal never changes it; an expired/released handle is never new authorization.
-`TryRun`/`Run` reject fencing because they do not expose a lease/token. See the
+`WithFencing` affects only `TryLock`/`Lock`; `TryRun`/`Run` always use ordinary
+fixed-TTL reservations and expose no fencing token. See the
 [fencing contract, backend limits and migration guide](docs/fencing.md).
 
 Neither mode provides exactly-once execution or a complete business-idempotency solution. An expired or paused owner can continue executing

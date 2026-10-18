@@ -45,7 +45,7 @@ func newExampleDriver() (*redisdriver.Driver, func()) {
 func ExampleNew() {
 	client, cleanup := newExampleClient()
 	defer cleanup()
-	// Include a separator: the prefix is prepended verbatim to logical keys.
+	// Include a separator; the driver encodes prefix + logical key into its hash tag.
 	driver, err := redisdriver.New(client, "myapp:leases:")
 	if err != nil {
 		panic(err)
@@ -65,11 +65,11 @@ func ExampleDriver_TryAcquire() {
 	// Direct driver users must generate a fresh owner for every new attempt.
 	// The higher-level anylock.Locker normally manages this token and lifecycle.
 	owner := rand.Text()
-	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, anylock.AcquireOptions{TTL: time.Hour})
+	acquired, err := driver.TryAcquire(ctx, anylock.AcquireRequest{Key: "resource:123", Owner: owner, TTL: time.Hour})
 	fmt.Println("acquired:", acquired.Acquired, "error:", err)
 
 	// A new attempt cannot replace the live marker; use Renew to extend it.
-	acquired, err = driver.TryAcquire(ctx, "resource:123", rand.Text(), anylock.AcquireOptions{TTL: time.Hour})
+	acquired, err = driver.TryAcquire(ctx, anylock.AcquireRequest{Key: "resource:123", Owner: rand.Text(), TTL: time.Hour})
 	fmt.Println("contended:", !acquired.Acquired, "error:", err)
 	renewed, err := driver.Renew(ctx, "resource:123", owner, time.Hour)
 	fmt.Println("renewed:", renewed, "error:", err)
@@ -88,7 +88,7 @@ func ExampleDriver_Renew() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	owner := rand.Text()
-	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, anylock.AcquireOptions{TTL: time.Hour})
+	acquired, err := driver.TryAcquire(ctx, anylock.AcquireRequest{Key: "resource:123", Owner: owner, TTL: time.Hour})
 	if err != nil || !acquired.Acquired {
 		panic("failed to acquire initial owner")
 	}
@@ -107,7 +107,7 @@ func ExampleDriver_Release() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	owner := rand.Text()
-	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, anylock.AcquireOptions{TTL: time.Hour})
+	acquired, err := driver.TryAcquire(ctx, anylock.AcquireRequest{Key: "resource:123", Owner: owner, TTL: time.Hour})
 	if err != nil || !acquired.Acquired {
 		panic("failed to acquire initial owner")
 	}

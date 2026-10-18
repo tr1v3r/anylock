@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,17 +46,17 @@ func TestIntegrationPostgresFencingLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = first.Release(context.Background()) })
-	token, enabled := first.Fence()
+	token, enabled := first.FencingToken()
 	if !enabled || token == 0 {
 		t.Fatal(token, enabled)
 	}
-	if busy, operationErr := f.driver.TryAcquire(f.ctx, "key", "intruder", anylock.AcquireOptions{TTL: time.Hour, Fencing: true}); operationErr != nil || busy.Acquired || busy.Token != 0 {
+	if busy, operationErr := f.driver.TryAcquire(f.ctx, anylock.AcquireRequest{Key: "key", Owner: "intruder", TTL: time.Hour, Fencing: true}); operationErr != nil || busy.Acquired || busy.FencingToken != 0 {
 		t.Fatal(busy, operationErr)
 	}
 	if operationErr := first.Renew(f.ctx); operationErr != nil {
 		t.Fatal(operationErr)
 	}
-	if next, _ := first.Fence(); next != token {
+	if next, _ := first.FencingToken(); next != token {
 		t.Fatal("renew changed token")
 	}
 	if operationErr := first.Release(f.ctx); operationErr != nil {
@@ -64,8 +65,8 @@ func TestIntegrationPostgresFencingLifecycle(t *testing.T) {
 	// A second Driver shares the same lock and sequence domains.
 	other := f.anotherDriver(t, f.prefix)
 	other.sequence = f.driver.sequence
-	second, err := other.TryAcquire(f.ctx, "key", "successor", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
-	if err != nil || !second.Acquired || second.Token <= token {
+	second, err := other.TryAcquire(f.ctx, anylock.AcquireRequest{Key: "key", Owner: "successor", TTL: time.Hour, Fencing: true})
+	if err != nil || !second.Acquired || second.FencingToken <= token {
 		t.Fatal(second, err)
 	}
 	if ok, operationErr := f.driver.Release(f.ctx, "key", "not-owner"); ok || operationErr != nil {
@@ -75,8 +76,8 @@ func TestIntegrationPostgresFencingLifecycle(t *testing.T) {
 	if _, operationErr := f.db.ExecContext(f.ctx, "DELETE FROM "+f.quotedTable()); operationErr != nil {
 		t.Fatal(operationErr)
 	}
-	third, err := other.TryAcquire(f.ctx, "key", "after-purge", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
-	if err != nil || third.Token <= second.Token {
+	third, err := other.TryAcquire(f.ctx, anylock.AcquireRequest{Key: "key", Owner: "after-purge", TTL: time.Hour, Fencing: true})
+	if err != nil || third.FencingToken <= second.FencingToken {
 		t.Fatal(third, err)
 	}
 }
@@ -90,7 +91,7 @@ func TestIntegrationPostgresFenceAllocatedAfterRowLock(t *testing.T) {
 	}
 	finished := make(chan reply, 1)
 	go func() {
-		result, err := f.driver.TryAcquire(f.ctx, "blocked", "successor", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+		result, err := f.driver.TryAcquire(f.ctx, anylock.AcquireRequest{Key: "blocked", Owner: "successor", TTL: time.Hour, Fencing: true})
 		finished <- reply{result, err}
 	}()
 	f.waitBlocked(t, pid)
@@ -116,7 +117,7 @@ func TestIntegrationPostgresFenceAllocatedAfterRowLock(t *testing.T) {
 	}
 	select {
 	case r := <-finished:
-		if r.err != nil || !r.result.Acquired || r.result.Token <= uint64(previous) {
+		if r.err != nil || !r.result.Acquired || r.result.FencingToken <= uint64(previous) {
 			t.Fatal(r.result, r.err, previous)
 		}
 	case <-f.ctx.Done():
@@ -129,8 +130,8 @@ func TestIntegrationPostgresFenceExhaustionRollsBackOwnership(t *testing.T) {
 	if _, operationErr := f.db.ExecContext(f.ctx, "SELECT setval($1::regclass,$2,true)", f.driver.sequence, int64(math.MaxInt64)); operationErr != nil {
 		t.Fatal(operationErr)
 	}
-	result, err := f.driver.TryAcquire(f.ctx, "overflow", "owner", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
-	if err == nil || result.Acquired || result.Token != 0 {
+	result, err := f.driver.TryAcquire(f.ctx, anylock.AcquireRequest{Key: "overflow", Owner: "owner", TTL: time.Hour, Fencing: true})
+	if err == nil || result.Acquired || result.FencingToken != 0 {
 		t.Fatal(result, err)
 	}
 	f.requireAbsent(t, "overflow")
@@ -141,13 +142,84 @@ func TestIntegrationPostgresFencedSuccessorSequence(t *testing.T) {
 	var previous uint64
 	for i := range 20 {
 		owner := fmt.Sprint(i)
-		result, err := f.driver.TryAcquire(f.ctx, "key", owner, anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
-		if err != nil || !result.Acquired || result.Token <= previous {
+		result, err := f.driver.TryAcquire(f.ctx, anylock.AcquireRequest{Key: "key", Owner: owner, TTL: time.Hour, Fencing: true})
+		if err != nil || !result.Acquired || result.FencingToken <= previous {
 			t.Fatal(result, err, previous)
 		}
-		previous = result.Token
+		previous = result.FencingToken
 		if ok, operationErr := f.driver.Release(f.ctx, "key", owner); !ok || operationErr != nil {
 			t.Fatal(ok, operationErr)
+		}
+	}
+}
+
+func TestIntegrationPostgresConcurrentFencedAcquisition(t *testing.T) {
+	f := realFencedPostgres(t)
+	d, ctx := f.driver, f.ctx
+	const workers = 16
+	var previous uint64
+	var previousOwner string
+	for wave := range 3 {
+		type reply struct {
+			owner  string
+			result anylock.AcquireResult
+			err    error
+		}
+		replies := make(chan reply, workers)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := range workers {
+			owner := fmt.Sprintf("%d/%d", wave, i)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				result, err := d.TryAcquire(ctx, anylock.AcquireRequest{Key: "shared", Owner: owner, TTL: time.Minute, Fencing: true})
+				replies <- reply{owner, result, err}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(replies)
+		winners := 0
+		var winner reply
+		for r := range replies {
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			if r.result.Acquired {
+				winners++
+				winner = r
+			} else if r.result.FencingToken != 0 {
+				t.Fatal("contended request received token", r.result)
+			}
+		}
+		if winners != 1 || winner.result.FencingToken <= previous {
+			t.Fatal("invalid winner/token", winners, winner.result, previous)
+		}
+		if previousOwner != "" {
+			if renewed, renewErr := d.Renew(ctx, "shared", previousOwner, time.Minute); renewed || renewErr != nil {
+				t.Fatal("stale renewal", renewed, renewErr)
+			}
+			if removed, releaseErr := d.Release(ctx, "shared", previousOwner); removed || releaseErr != nil {
+				t.Fatal("stale release", removed, releaseErr)
+			}
+		}
+		previous, previousOwner = winner.result.FencingToken, winner.owner
+		if removed, releaseErr := d.Release(ctx, "shared", winner.owner); !removed || releaseErr != nil {
+			t.Fatal(removed, releaseErr)
+		}
+		// Ordinary acquisitions use the exact same lease space and never allocate tokens.
+		plain, plainErr := d.TryAcquire(ctx, anylock.AcquireRequest{Key: "shared", Owner: "plain", TTL: time.Minute})
+		if plainErr != nil || !plain.Acquired || plain.FencingToken != 0 {
+			t.Fatal(plain, plainErr)
+		}
+		busy, busyErr := d.TryAcquire(ctx, anylock.AcquireRequest{Key: "shared", Owner: "fenced", TTL: time.Minute, Fencing: true})
+		if busyErr != nil || busy != (anylock.AcquireResult{}) {
+			t.Fatal(busy, busyErr)
+		}
+		if removed, releaseErr := d.Release(ctx, "shared", "plain"); !removed || releaseErr != nil {
+			t.Fatal(removed, releaseErr)
 		}
 	}
 }

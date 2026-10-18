@@ -28,8 +28,8 @@ import (
 // an old owner must never extend or remove a successor's lease. Its bool reports
 // whether the owner-checked deletion removed a record, not prior lease validity.
 // Expired records may already have been reclaimed. Acquired false is contention,
-// with a zero Token. Ordinary acquisition returns Token zero on success too. Renew
-// false means lost ownership; Release false means no matching record. Errors
+// with a zero FencingToken. Ordinary acquisition returns FencingToken zero too.
+// Renew false means lost ownership; Release false means no matching record. Errors
 // may have ambiguous outcomes and never authorize protected work.
 //
 // TTL is measured by the backend; it must not be rounded down. Clock jumps,
@@ -38,26 +38,28 @@ import (
 // Driver implementations own their connection resources; Locker never closes them.
 // TryRun and Run use only TryAcquire; they never renew or release reservations.
 type Driver interface {
-	TryAcquire(ctx context.Context, key, owner string, opts AcquireOptions) (AcquireResult, error)
+	TryAcquire(ctx context.Context, req AcquireRequest) (AcquireResult, error)
 	Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
 	Release(ctx context.Context, key, owner string) (bool, error)
 }
 
-// AcquireOptions describes one acquisition. TTL must be positive. Fencing requires
+// AcquireRequest describes one acquisition. TTL must be positive. Fencing requires
 // ownership and a new token to be granted atomically; drivers that do not support
 // it must return ErrFencingUnsupported before granting ownership. New does not
 // negotiate capabilities: support is checked by the driver on each acquisition.
 // Tokens must increase for each key under the driver's documented persistence and
 // failover model. Gaps are allowed; exhaustion must fail, never wrap.
-type AcquireOptions struct {
+type AcquireRequest struct {
+	Key     string
+	Owner   string
 	TTL     time.Duration
 	Fencing bool
 }
 
 // AcquireResult describes an acquisition. Errors always take precedence over this
-// value. Contention returns the zero value. Token is zero for ordinary acquisition
+// value. Contention returns the zero value. FencingToken is zero for ordinary acquisition
 // and strictly positive for successful fenced acquisition.
 type AcquireResult struct {
-	Acquired bool
-	Token    uint64
+	Acquired     bool
+	FencingToken uint64
 }

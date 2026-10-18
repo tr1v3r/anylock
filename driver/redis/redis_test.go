@@ -213,7 +213,7 @@ func TestSameKeyContentionMultipleClients(t *testing.T) {
 	owner := fmt.Sprintf("owner-%d", winner)
 	ok, err := drivers[winner].tryAcquire(testContext, "shared", owner, time.Hour)
 	requireResult(t, false, ok, err)
-	if ttl := server.TTL("lease:shared"); ttl != time.Minute {
+	if ttl := server.TTL(leaseKey("lease:shared")); ttl != time.Minute {
 		t.Fatalf("contending acquisition changed TTL to %v", ttl)
 	}
 	ok, err = drivers[winner].Release(testContext, "shared", owner)
@@ -233,7 +233,7 @@ func TestExpirationAndSuccessorRejectStaleOwner(t *testing.T) {
 	requireResult(t, false, ok, err)
 	ok, err = first.Release(testContext, "key", "old")
 	requireResult(t, false, ok, err)
-	if server.Exists("lease:key") {
+	if server.Exists(leaseKey("lease:key")) {
 		t.Fatal("expired lease was revived")
 	}
 	ok, err = second.tryAcquire(testContext, "key", "new", time.Minute)
@@ -242,10 +242,10 @@ func TestExpirationAndSuccessorRejectStaleOwner(t *testing.T) {
 	requireResult(t, false, ok, err)
 	ok, err = first.Release(testContext, "key", "old")
 	requireResult(t, false, ok, err)
-	if value, err := client.Get(testContext, "lease:key").Result(); value != "new" || err != nil {
+	if value, err := client.Get(testContext, leaseKey("lease:key")).Result(); value != "new" || err != nil {
 		t.Fatalf("successor = %q, %v", value, err)
 	}
-	if ttl := server.TTL("lease:key"); ttl != time.Minute {
+	if ttl := server.TTL(leaseKey("lease:key")); ttl != time.Minute {
 		t.Fatalf("stale owner changed successor TTL to %v", ttl)
 	}
 }
@@ -262,22 +262,22 @@ func TestRenewalAndNoRevival(t *testing.T) {
 	server.FastForward(500 * time.Millisecond)
 	ok, err = driver.Renew(testContext, "key", "wrong", time.Hour)
 	requireResult(t, false, ok, err)
-	if ttl := server.TTL("key"); ttl != 500*time.Millisecond {
+	if ttl := server.TTL(leaseKey("key")); ttl != 500*time.Millisecond {
 		t.Fatalf("wrong owner changed TTL to %v", ttl)
 	}
 	ok, err = driver.Renew(testContext, "key", "owner", 2*time.Second)
 	requireResult(t, true, ok, err)
-	if ttl := server.TTL("key"); ttl != 2*time.Second {
+	if ttl := server.TTL(leaseKey("key")); ttl != 2*time.Second {
 		t.Fatalf("renewed TTL = %v", ttl)
 	}
 	server.FastForward(time.Second)
-	if !server.Exists("key") {
+	if !server.Exists(leaseKey("key")) {
 		t.Fatal("renewal did not extend lease")
 	}
 	server.FastForward(time.Second)
 	ok, err = driver.Renew(testContext, "key", "owner", time.Second)
 	requireResult(t, false, ok, err)
-	if server.Exists("key") {
+	if server.Exists(leaseKey("key")) {
 		t.Fatal("renewal revived expired lease")
 	}
 	ok, err = driver.tryAcquire(testContext, "key", "owner-2", time.Second)
@@ -298,20 +298,20 @@ func TestTTLUpRounding(t *testing.T) {
 			want := time.Duration((int64(ttl)-1)/int64(time.Millisecond)+1) * time.Millisecond
 			ok, err := driver.tryAcquire(testContext, "key", "owner", ttl)
 			requireResult(t, true, ok, err)
-			if got := server.TTL("ttl:key"); got != want {
+			if got := server.TTL(leaseKey("ttl:key")); got != want {
 				t.Fatalf("acquire TTL = %v; want %v", got, want)
 			}
 			ok, err = driver.Renew(testContext, "key", "owner", ttl)
 			requireResult(t, true, ok, err)
-			if got := server.TTL("ttl:key"); got != want {
+			if got := server.TTL(leaseKey("ttl:key")); got != want {
 				t.Fatalf("renew TTL = %v; want %v", got, want)
 			}
 			server.FastForward(want - time.Nanosecond)
-			if !server.Exists("ttl:key") {
+			if !server.Exists(leaseKey("ttl:key")) {
 				t.Fatal("TTL rounded down")
 			}
 			server.FastForward(time.Nanosecond)
-			if server.Exists("ttl:key") {
+			if server.Exists(leaseKey("ttl:key")) {
 				t.Fatal("lease did not expire")
 			}
 		})
@@ -326,14 +326,14 @@ func TestCommandsAndMaxDurationDoNotOverflow(t *testing.T) {
 	defer cancel()
 	client := &stubClient{
 		do: func(gotContext context.Context, args ...any) *goredis.Cmd {
-			want := []any{"SET", "prefix:key", "owner", "NX", "PX", maxMilliseconds}
+			want := []any{"SET", leaseKey("prefix:key"), "owner", "NX", "PX", maxMilliseconds}
 			if gotContext != ctx || !reflect.DeepEqual(args, want) {
 				t.Errorf("Do context/args = %v / %#v; want original context / %#v", gotContext, args, want)
 			}
 			return resultCommand("OK", nil)
 		},
 		eval: func(gotContext context.Context, script string, keys []string, args ...any) *goredis.Cmd {
-			if gotContext != ctx || !reflect.DeepEqual(keys, []string{"prefix:key"}) {
+			if gotContext != ctx || !reflect.DeepEqual(keys, []string{leaseKey("prefix:key")}) {
 				t.Errorf("Eval context/keys = %v / %#v", gotContext, keys)
 			}
 			if script == renewScript {
@@ -491,7 +491,7 @@ func TestIndependentKeysAndNamespaces(t *testing.T) {
 	}
 	ok, err := first.Release(testContext, "a", "owner")
 	requireResult(t, true, ok, err)
-	for _, key := range []string{"first:b", "second:a"} {
+	for _, key := range []string{leaseKey("first:b"), leaseKey("second:a")} {
 		if value, err := client.Get(testContext, key).Result(); value != "owner" || err != nil {
 			t.Errorf("independent key %q = %q, %v", key, value, err)
 		}
@@ -505,7 +505,7 @@ func TestIndependentKeysAndNamespaces(t *testing.T) {
 func TestRedisWrongTypeErrors(t *testing.T) {
 	server := miniredis.RunT(t)
 	driver, client := newDriver(t, server.Addr(), "")
-	if err := client.LPush(testContext, "key", "owner").Err(); err != nil {
+	if err := client.LPush(testContext, leaseKey("key"), "owner").Err(); err != nil {
 		t.Fatal(err)
 	}
 	ok, err := driver.tryAcquire(testContext, "key", "owner", time.Second)

@@ -75,9 +75,9 @@ compatible core version, and keep backend-specific test dependencies local.
 
 ## Fencing API development
 
-The fencing change gives `Driver.TryAcquire` an `AcquireOptions` request and
-`AcquireResult` response (`Token` is zero when fencing is not requested), and adds
-`Lease.Fence`. Workspace checks use the matching local core/drivers. Existing
+The fencing change gives `Driver.TryAcquire` an `AcquireRequest` request and
+`AcquireResult` response (`FencingToken` is zero when fencing is not requested), and adds
+`Lease.FencingToken`. Workspace checks use the matching local core/drivers. Existing
 `go.mod` pins remain published versions until release: do not invent an
 unpublished version or add distributable local-path replacements. Consequently,
 standalone driver checks against the old core pin cannot validate this new API.

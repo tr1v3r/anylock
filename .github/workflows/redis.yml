@@ -35,3 +35,28 @@ jobs:
         env:
           ANYLOCK_REDIS_ADDR: 127.0.0.1:6379
         run: ./scripts/modules.sh go test -race -count=1 -tags=integration ./...
+
+  redis-cluster:
+    name: Redis 7 Cluster (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.24.x', 'stable']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: '**/go.sum'
+      - name: Start isolated three-master Redis Cluster
+        run: ./scripts/redis-cluster.sh start anylock-test-cluster
+      - name: Verify same-slot fencing and mixed acquisition ownership
+        working-directory: driver/redis
+        env:
+          ANYLOCK_REDIS_CLUSTER_ADDRS: 127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002
+        run: go test -race -count=1 -tags=integration -run '^TestIntegrationRedisClusterFencing$' ./...
+      - name: Remove isolated Redis Cluster
+        if: always()
+        run: ./scripts/redis-cluster.sh stop anylock-test-cluster

@@ -86,9 +86,10 @@ func New() *Driver {
 // uses an instance-wide counter that survives expiry/release/sweeping, but not
 // process or Driver replacement.
 func (d *Driver) TryAcquire(
-	ctx context.Context, key, owner string, opts anylock.AcquireOptions,
+	ctx context.Context, req anylock.AcquireRequest,
 ) (anylock.AcquireResult, error) {
-	ttl := opts.TTL
+	key, owner := req.Key, req.Owner
+	ttl := req.TTL
 	if err := d.validate(ctx, key, owner); err != nil {
 		return anylock.AcquireResult{}, err
 	}
@@ -107,7 +108,7 @@ func (d *Driver) TryAcquire(
 		d.remove(e)
 	}
 	var fence uint64
-	if opts.Fencing {
+	if req.Fencing {
 		if d.fence == math.MaxUint64 {
 			return anylock.AcquireResult{}, errors.New("anylock/memory: fence exhausted")
 		}
@@ -123,7 +124,7 @@ func (d *Driver) TryAcquire(
 	if err := requestError(ctx); err != nil {
 		return anylock.AcquireResult{}, err
 	}
-	return anylock.AcquireResult{Acquired: true, Token: fence}, nil
+	return anylock.AcquireResult{Acquired: true, FencingToken: fence}, nil
 }
 
 // Renew atomically resets the matching live owner's expiry to ttl from this

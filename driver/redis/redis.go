@@ -2,8 +2,8 @@
 //
 // Acquiring uses a single SET NX PX command; renewing and releasing use atomic
 // owner-checking Lua scripts. Positive TTLs are rounded up to milliseconds.
-// Prefixes are prepended verbatim to keys; callers should include any desired
-// separator and use a namespace reserved for leases. The lock core generates
+// Prefixes namespace logical keys before the driver encodes physical keys with
+// a shared hash tag for each lease/counter pair. Reserve that encoded namespace. The lock core generates
 // owner tokens and manages lease lifecycle; this driver does neither.
 //
 // Redis expiry depends on its clock. Clock jumps, pauses, partitions, and lost
@@ -23,11 +23,11 @@ package redis
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -109,21 +109,22 @@ func New(client Client, prefix string) (*Driver, error) {
 // TryAcquire atomically creates an absent lease. Acquired false means the key is already
 // held, even when owner matches; acquisition is not a renewal operation.
 func (d *Driver) TryAcquire(
-	ctx context.Context, key, owner string, opts anylock.AcquireOptions,
+	ctx context.Context, req anylock.AcquireRequest,
 ) (anylock.AcquireResult, error) {
+	key, owner := req.Key, req.Owner
 	if err := d.validate(ctx, key, owner); err != nil {
 		return anylock.AcquireResult{}, err
 	}
 	ctx, cancel := operationContext(ctx)
 	defer cancel()
-	milliseconds, err := ttlMilliseconds(opts.TTL)
+	milliseconds, err := ttlMilliseconds(req.TTL)
 	if err != nil {
 		return anylock.AcquireResult{}, err
 	}
-	if opts.Fencing {
+	if req.Fencing {
 		return d.acquireFenced(ctx, key, owner, milliseconds)
 	}
-	cmd := d.client.Do(ctx, "SET", d.prefix+key, owner, "NX", "PX", milliseconds)
+	cmd := d.client.Do(ctx, "SET", leaseKey(d.prefix+key), owner, "NX", "PX", milliseconds)
 	if cmd == nil {
 		return anylock.AcquireResult{}, errors.New("anylock/redis: acquire: nil command")
 	}
@@ -152,7 +153,7 @@ func (d *Driver) Renew(ctx context.Context, key, owner string, ttl time.Duration
 	if err != nil {
 		return false, err
 	}
-	return scriptResult(d.client.Eval(ctx, renewScript, []string{d.prefix + key}, owner, milliseconds), "renew")
+	return scriptResult(d.client.Eval(ctx, renewScript, []string{leaseKey(d.prefix + key)}, owner, milliseconds), "renew")
 }
 
 // Release atomically deletes a stored key only when its owner matches. Redis
@@ -165,7 +166,7 @@ func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 	}
 	ctx, cancel := operationContext(ctx)
 	defer cancel()
-	return scriptResult(d.client.Eval(ctx, releaseScript, []string{d.prefix + key}, owner), "release")
+	return scriptResult(d.client.Eval(ctx, releaseScript, []string{leaseKey(d.prefix + key)}, owner), "release")
 }
 
 func (d *Driver) validate(ctx context.Context, key, owner string) error {
@@ -174,9 +175,6 @@ func (d *Driver) validate(ctx context.Context, key, owner string) error {
 	}
 	if ctx == nil {
 		return errors.New("anylock/redis: nil context")
-	}
-	if strings.HasSuffix(key, fenceSuffix) {
-		return errors.New("anylock/redis: key uses reserved fencing suffix")
 	}
 	if key == "" || owner == "" {
 		return errors.New("anylock/redis: key and owner must not be empty")
@@ -232,8 +230,14 @@ func isNil(value any) bool {
 	}
 }
 
-// Counter keys are persistent and reserved, including for ordinary acquisitions.
-const fenceSuffix = ":__anylock_fence"
+// Both kinds of acquisition, renewal and release use these exact physical keys.
+// A hex tag cannot contain braces, even if prefix/key do. Separate suffixes make
+// lease/counter namespaces disjoint for every valid logical key.
+func leaseKey(namespaced string) string   { return keyTag(namespaced) + ":lease" }
+func counterKey(namespaced string) string { return keyTag(namespaced) + ":fence" }
+func keyTag(namespaced string) string {
+	return "{anylock:" + hex.EncodeToString([]byte(namespaced)) + "}"
+}
 
 // INCR's Lua numeric reply loses precision above 2^53. Fetch the exact decimal
 // string with GET instead. INCR exhaustion/errors happen before installing a lease.
@@ -246,13 +250,13 @@ return token
 `
 
 // acquireFenced uses the validated request context and rounded TTL from TryAcquire.
-// Redis Cluster requires a nonempty hash tag so both keys share a slot. Counter
-// loss or rollback (including failover) breaks monotonicity.
+// The key mapping always places the lease and persistent counter in the same
+// Redis Cluster slot. Counter rollback (including failover) breaks monotonicity.
 func (d *Driver) acquireFenced(
 	ctx context.Context, key, owner string, milliseconds int64,
 ) (anylock.AcquireResult, error) {
-	physical := d.prefix + key
-	cmd := d.client.Eval(ctx, acquireFencedScript, []string{physical, physical + fenceSuffix}, owner, milliseconds)
+	physical := leaseKey(d.prefix + key)
+	cmd := d.client.Eval(ctx, acquireFencedScript, []string{physical, counterKey(d.prefix + key)}, owner, milliseconds)
 	if cmd == nil {
 		return anylock.AcquireResult{}, errors.New("anylock/redis: fenced acquire: nil command")
 	}
@@ -271,5 +275,5 @@ func (d *Driver) acquireFenced(
 	if err != nil || token == 0 {
 		return anylock.AcquireResult{}, errors.New("anylock/redis: fenced acquire: invalid token")
 	}
-	return anylock.AcquireResult{Acquired: true, Token: token}, nil
+	return anylock.AcquireResult{Acquired: true, FencingToken: token}, nil
 }

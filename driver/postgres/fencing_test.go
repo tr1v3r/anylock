@@ -56,7 +56,7 @@ func TestFencedAcquisitionResults(t *testing.T) {
 				}
 				expectation.WillReturnRows(rows)
 			}
-			result, err := d.TryAcquire(context.Background(), "key", "owner", anylock.AcquireOptions{TTL: time.Second, Fencing: true})
+			result, err := d.TryAcquire(context.Background(), anylock.AcquireRequest{Key: "key", Owner: "owner", TTL: time.Second, Fencing: true})
 			if (err != nil) != tc.wantErr {
 				t.Fatal(result, err)
 			}
@@ -67,7 +67,7 @@ func TestFencedAcquisitionResults(t *testing.T) {
 				if result != (anylock.AcquireResult{}) {
 					t.Fatal(result)
 				}
-			} else if !result.Acquired || result.Token != uint64(tc.token) {
+			} else if !result.Acquired || result.FencingToken != uint64(tc.token) {
 				t.Fatal(result)
 			}
 		})
@@ -91,7 +91,7 @@ func TestFencedValidationBeforeIO(t *testing.T) {
 		{ctx: context.Background(), key: "", owner: "owner", ttl: time.Second},
 		{ctx: context.Background(), key: "key", owner: "owner", ttl: 0},
 	} {
-		if result, operationErr := d.TryAcquire(tc.ctx, tc.key, tc.owner, anylock.AcquireOptions{TTL: tc.ttl, Fencing: true}); operationErr == nil || result.Acquired {
+		if result, operationErr := d.TryAcquire(tc.ctx, anylock.AcquireRequest{Key: tc.key, Owner: tc.owner, TTL: tc.ttl, Fencing: true}); operationErr == nil || result.Acquired {
 			t.Fatal(result, operationErr)
 		}
 	}

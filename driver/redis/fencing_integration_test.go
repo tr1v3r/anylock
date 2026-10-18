@@ -25,12 +25,12 @@ func TestIntegrationRedisFencing(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Second)
 		defer stop()
-		if operationErr := client.Del(cleanup, prefix+"key", prefix+"key"+fenceSuffix).Err(); operationErr != nil {
+		if operationErr := client.Del(cleanup, leaseKey(prefix+"key"), counterKey(prefix+"key")).Err(); operationErr != nil {
 			t.Error(operationErr)
 		}
 	})
 	const previous = uint64(1 << 53)
-	if operationErr := client.Set(ctx, prefix+"key"+fenceSuffix, strconv.FormatUint(previous, 10), 0).Err(); operationErr != nil {
+	if operationErr := client.Set(ctx, counterKey(prefix+"key"), strconv.FormatUint(previous, 10), 0).Err(); operationErr != nil {
 		t.Fatal(operationErr)
 	}
 	locker, err := anylock.New(d, anylock.WithFencing())
@@ -42,30 +42,30 @@ func TestIntegrationRedisFencing(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = first.Release(context.Background()) })
-	token, enabled := first.Fence()
+	token, enabled := first.FencingToken()
 	if !enabled || token != previous+1 {
 		t.Fatal(token, enabled)
 	}
 	if operationErr := first.Renew(ctx); operationErr != nil {
 		t.Fatal(operationErr)
 	}
-	if busy, operationErr := d.TryAcquire(ctx, "key", "other", anylock.AcquireOptions{TTL: time.Second, Fencing: true}); operationErr != nil || busy.Acquired || busy.Token != 0 {
+	if busy, operationErr := d.TryAcquire(ctx, anylock.AcquireRequest{Key: "key", Owner: "other", TTL: time.Second, Fencing: true}); operationErr != nil || busy.Acquired || busy.FencingToken != 0 {
 		t.Fatal(busy, operationErr)
 	}
 	if operationErr := first.Release(ctx); operationErr != nil {
 		t.Fatal(operationErr)
 	}
 	other, _ := newDriver(t, addr, prefix)
-	second, err := other.TryAcquire(ctx, "key", "successor", anylock.AcquireOptions{TTL: 20 * time.Millisecond, Fencing: true})
-	if err != nil || second.Token != token+1 {
+	second, err := other.TryAcquire(ctx, anylock.AcquireRequest{Key: "key", Owner: "successor", TTL: 20 * time.Millisecond, Fencing: true})
+	if err != nil || second.FencingToken != token+1 {
 		t.Fatal(second, err)
 	}
 	waitForRealExpiry(t, ctx, func() (bool, error) {
-		n, existsErr := client.Exists(ctx, prefix+"key").Result()
+		n, existsErr := client.Exists(ctx, leaseKey(prefix+"key")).Result()
 		return n == 0, existsErr
 	})
-	third, err := d.TryAcquire(ctx, "key", "third", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
-	if err != nil || third.Token != second.Token+1 {
+	third, err := d.TryAcquire(ctx, anylock.AcquireRequest{Key: "key", Owner: "third", TTL: time.Hour, Fencing: true})
+	if err != nil || third.FencingToken != second.FencingToken+1 {
 		t.Fatal(third, err)
 	}
 }

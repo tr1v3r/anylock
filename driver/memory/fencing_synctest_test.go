@@ -27,13 +27,13 @@ func TestSynctestFencingExpiryAndAutoRenew(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer first.Release(context.Background())
-				token, enabled := first.Fence()
+				token, enabled := first.FencingToken()
 				if !enabled || token == 0 {
 					t.Fatal(token, enabled)
 				}
 				time.Sleep(30 * time.Second)
 				synctest.Wait()
-				if next, _ := first.Fence(); next != token {
+				if next, _ := first.FencingToken(); next != token {
 					t.Fatal("token changed", next, token)
 				}
 				if automatic {
@@ -54,7 +54,7 @@ func TestSynctestFencingExpiryAndAutoRenew(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer second.Release(context.Background())
-				if next, _ := second.Fence(); next <= token {
+				if next, _ := second.FencingToken(); next <= token {
 					t.Fatal(next, token)
 				}
 				if operationErr := first.Release(context.Background()); operationErr != nil {
