@@ -9,6 +9,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/tr1v3r/anylock"
 	redisdriver "github.com/tr1v3r/anylock/driver/redis"
 )
 
@@ -64,11 +65,11 @@ func ExampleDriver_TryAcquire() {
 	// Direct driver users must generate a fresh owner for every new attempt.
 	// The higher-level anylock.Locker normally manages this token and lifecycle.
 	owner := rand.Text()
-	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
+	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, anylock.AcquireOptions{TTL: time.Hour})
 	fmt.Println("acquired:", acquired.Acquired, "error:", err)
 
 	// A new attempt cannot replace the live marker; use Renew to extend it.
-	acquired, err = driver.TryAcquire(ctx, "resource:123", rand.Text(), time.Hour)
+	acquired, err = driver.TryAcquire(ctx, "resource:123", rand.Text(), anylock.AcquireOptions{TTL: time.Hour})
 	fmt.Println("contended:", !acquired.Acquired, "error:", err)
 	renewed, err := driver.Renew(ctx, "resource:123", owner, time.Hour)
 	fmt.Println("renewed:", renewed, "error:", err)
@@ -87,7 +88,7 @@ func ExampleDriver_Renew() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	owner := rand.Text()
-	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
+	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, anylock.AcquireOptions{TTL: time.Hour})
 	if err != nil || !acquired.Acquired {
 		panic("failed to acquire initial owner")
 	}
@@ -106,7 +107,7 @@ func ExampleDriver_Release() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	owner := rand.Text()
-	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, time.Hour)
+	acquired, err := driver.TryAcquire(ctx, "resource:123", owner, anylock.AcquireOptions{TTL: time.Hour})
 	if err != nil || !acquired.Acquired {
 		panic("failed to acquire initial owner")
 	}

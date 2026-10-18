@@ -63,7 +63,7 @@ type Driver struct {
 	sequence string
 }
 
-var _ anylock.FencingDriver = (*Driver)(nil)
+var _ anylock.Driver = (*Driver)(nil)
 
 // Option configures a Driver before it is shared.
 type Option func(*Driver) error
@@ -121,13 +121,18 @@ func (d *Driver) EnsureSchema(ctx context.Context) error {
 
 // TryAcquire atomically reserves an absent/expired key. An unexpired row is busy
 // even if its owner matches. Data values are bound parameters, never SQL text.
-func (d *Driver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (anylock.AcquireResult, error) {
+func (d *Driver) TryAcquire(
+	ctx context.Context, key, owner string, opts anylock.AcquireOptions,
+) (anylock.AcquireResult, error) {
 	if err := d.validate(ctx, key, owner); err != nil {
 		return anylock.AcquireResult{}, err
 	}
-	interval, err := ttlInterval(ttl)
+	interval, err := ttlInterval(opts.TTL)
 	if err != nil {
 		return anylock.AcquireResult{}, err
+	}
+	if opts.Fencing {
+		return d.acquireFenced(ctx, key, owner, interval)
 	}
 	ok, err := d.exec(ctx, "acquire", fmt.Sprintf(acquireSQL, d.table), d.prefix+key, owner, interval)
 	return anylock.AcquireResult{Acquired: ok}, err
@@ -296,20 +301,13 @@ func (d *Driver) EnsureFencingSchema(ctx context.Context) error {
 	return err
 }
 
-// TryAcquireFenced allocates nextval only AFTER acquisition, while the modifying
+// acquireFenced allocates nextval only AFTER acquisition, while the modifying
 // CTE still holds the lease row lock. Allocating in INSERT's VALUES before an
 // ON CONFLICT wait could grant an older token to a newer owner. Sequence gaps
 // (including aborted operations) are harmless. Missing sequence is an error.
-func (d *Driver) TryAcquireFenced(
-	ctx context.Context, key, owner string, ttl time.Duration,
+func (d *Driver) acquireFenced(
+	ctx context.Context, key, owner, interval string,
 ) (anylock.AcquireResult, error) {
-	if err := d.validate(ctx, key, owner); err != nil {
-		return anylock.AcquireResult{}, err
-	}
-	interval, err := ttlInterval(ttl)
-	if err != nil {
-		return anylock.AcquireResult{}, err
-	}
 	query := "WITH acquired AS (" + fmt.Sprintf(acquireSQL, d.table) +
 		" RETURNING key) SELECT pg_catalog.nextval($4::pg_catalog.regclass) FROM acquired"
 	request, cancel := operationContext(ctx)
@@ -318,7 +316,7 @@ func (d *Driver) TryAcquireFenced(
 		return anylock.AcquireResult{}, contextErr
 	}
 	var token int64
-	err = d.db.QueryRowContext(request, query, d.prefix+key, owner, interval, d.sequence).Scan(&token)
+	err := d.db.QueryRowContext(request, query, d.prefix+key, owner, interval, d.sequence).Scan(&token)
 	if requestErr := requestError(request); requestErr != nil {
 		return anylock.AcquireResult{}, errors.Join(err, requestErr)
 	}
@@ -331,5 +329,5 @@ func (d *Driver) TryAcquireFenced(
 	if token <= 0 {
 		return anylock.AcquireResult{}, errors.New("anylock/postgres: invalid fencing token")
 	}
-	return anylock.AcquireResult{Acquired: true, Fence: uint64(token)}, nil
+	return anylock.AcquireResult{Acquired: true, Token: uint64(token)}, nil
 }

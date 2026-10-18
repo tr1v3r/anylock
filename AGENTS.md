@@ -10,7 +10,8 @@ Go 1.24+ multi-module repository; dependency-free core `github.com/tr1v3r/anyloc
 - Backends belong under `driver/` as independent modules. Do not import backend clients into root, including its tests/examples. Callers own client/pool resources.
 - Cross-module integration tests belong in `integration/`. Root examples use a standard-library fixture; Backend examples live with each driver. See `MODULES.md` for module pins and release order.
 - New drivers are independent PRs. Do not silently weaken expiry/owner/context contracts to fit a backend; document and resolve semantic differences explicitly.
-- Fencing is explicit and requires a FencingDriver; target storage must atomically validate tokens with writes.
+- Fencing is explicit through AcquireOptions; unsupported drivers reject acquisition before granting ownership.
+  Target storage must atomically validate tokens with writes.
   Clock changes, pauses, partitions and counter rollback/failover remain backend limitations.
 
 ## Checks

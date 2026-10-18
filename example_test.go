@@ -28,16 +28,8 @@ func newExampleDriver() *exampleDriver {
 }
 
 func (d *exampleDriver) tryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if record, ok := d.records[key]; ok && time.Now().Before(record.deadline) {
-		return false, nil
-	}
-	d.records[key] = exampleRecord{owner, time.Now().Add(ttl)}
-	return true, nil
+	result, err := d.TryAcquire(ctx, key, owner, anylock.AcquireOptions{TTL: ttl})
+	return result.Acquired, err
 }
 
 func (d *exampleDriver) Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
@@ -353,13 +345,8 @@ func ExampleLease_Context() {
 	// work canceled: true
 }
 
-func (d *exampleDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (anylock.AcquireResult, error) {
-	ok, err := d.tryAcquire(ctx, key, owner, ttl)
-	return anylock.AcquireResult{Acquired: ok}, err
-}
-
-func (d *exampleDriver) TryAcquireFenced(
-	ctx context.Context, key, owner string, ttl time.Duration,
+func (d *exampleDriver) TryAcquire(
+	ctx context.Context, key, owner string, opts anylock.AcquireOptions,
 ) (anylock.AcquireResult, error) {
 	if err := ctx.Err(); err != nil {
 		return anylock.AcquireResult{}, err
@@ -369,9 +356,13 @@ func (d *exampleDriver) TryAcquireFenced(
 	if record, ok := d.records[key]; ok && time.Now().Before(record.deadline) {
 		return anylock.AcquireResult{}, nil
 	}
-	d.fence++ // Example fixture only; built-in drivers also reject counter exhaustion.
-	d.records[key] = exampleRecord{owner, time.Now().Add(ttl)}
-	return anylock.AcquireResult{Acquired: true, Fence: d.fence}, nil
+	var token uint64
+	if opts.Fencing {
+		d.fence++ // Example fixture only; built-in drivers also reject counter exhaustion.
+		token = d.fence
+	}
+	d.records[key] = exampleRecord{owner, time.Now().Add(opts.TTL)}
+	return anylock.AcquireResult{Acquired: true, Token: token}, nil
 }
 
 // fencedStorage models a single protected resource. A real database performs

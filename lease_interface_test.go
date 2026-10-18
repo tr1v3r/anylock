@@ -239,7 +239,11 @@ func TestLeaseInterfaceLateSuccessReturnsNil(t *testing.T) {
 	}
 }
 
-func (d leaseInterfaceDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (anylock.AcquireResult, error) {
+func (d leaseInterfaceDriver) TryAcquire(ctx context.Context, key, owner string, opts anylock.AcquireOptions) (anylock.AcquireResult, error) {
+	if opts.Fencing {
+		return anylock.AcquireResult{}, anylock.ErrFencingUnsupported
+	}
+	ttl := opts.TTL
 	ok, err := d.tryAcquire(ctx, key, owner, ttl)
 	return anylock.AcquireResult{Acquired: ok}, err
 }

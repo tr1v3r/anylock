@@ -14,23 +14,23 @@ import (
 func TestFencingLifecycle(t *testing.T) {
 	d := New()
 	ctx := context.Background()
-	first, err := d.TryAcquireFenced(ctx, "key", "old", time.Hour)
-	if err != nil || !first.Acquired || first.Fence == 0 {
+	first, err := d.TryAcquire(ctx, "key", "old", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+	if err != nil || !first.Acquired || first.Token == 0 {
 		t.Fatalf("first = %+v, %v", first, err)
 	}
-	busy, err := d.TryAcquireFenced(ctx, "key", "other", time.Hour)
+	busy, err := d.TryAcquire(ctx, "key", "other", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
 	if err != nil || busy != (anylock.AcquireResult{}) {
 		t.Fatalf("busy = %+v, %v", busy, err)
 	}
 	if ok, operationErr := d.Renew(ctx, "key", "old", time.Hour); !ok || operationErr != nil {
 		t.Fatal(ok, operationErr)
 	}
-	if d.fence != first.Fence {
+	if d.fence != first.Token {
 		t.Fatal("renew allocated a token")
 	}
 	release(t, d, "key", "old", true)
-	second, err := d.TryAcquireFenced(ctx, "key", "new", time.Hour)
-	if err != nil || !second.Acquired || second.Fence <= first.Fence {
+	second, err := d.TryAcquire(ctx, "key", "new", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+	if err != nil || !second.Acquired || second.Token <= first.Token {
 		t.Fatalf("successor = %+v, %v", second, err)
 	}
 	release(t, d, "key", "old", false)
@@ -38,13 +38,13 @@ func TestFencingLifecycle(t *testing.T) {
 	d.gate <- struct{}{}
 	d.entries["key"].expires = 0
 	d.leave()
-	third, err := d.TryAcquireFenced(ctx, "key", "third", time.Hour)
-	if err != nil || third.Fence <= second.Fence {
+	third, err := d.TryAcquire(ctx, "key", "third", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+	if err != nil || third.Token <= second.Token {
 		t.Fatalf("expired successor = %+v, %v", third, err)
 	}
 	release(t, d, "key", "third", true)
 	acquire(t, d, "key", "plain", time.Hour, true)
-	if result, operationErr := d.TryAcquireFenced(ctx, "key", "fourth", time.Hour); operationErr != nil || result.Acquired || result.Fence != 0 {
+	if result, operationErr := d.TryAcquire(ctx, "key", "fourth", anylock.AcquireOptions{TTL: time.Hour, Fencing: true}); operationErr != nil || result.Acquired || result.Token != 0 {
 		t.Fatalf("mixed contention = %+v, %v", result, operationErr)
 	}
 }
@@ -52,13 +52,13 @@ func TestFencingLifecycle(t *testing.T) {
 func TestFenceExhaustionAndCancellation(t *testing.T) {
 	d := New()
 	d.fence = math.MaxUint64
-	result, err := d.TryAcquireFenced(context.Background(), "key", "owner", time.Hour)
+	result, err := d.TryAcquire(context.Background(), "key", "owner", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
 	if err == nil || result.Acquired || len(d.entries) != 0 {
 		t.Fatalf("overflow = %+v, %v", result, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	result, err = d.TryAcquireFenced(ctx, "key", "owner", time.Hour)
+	result, err = d.TryAcquire(ctx, "key", "owner", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
 	if !errors.Is(err, context.Canceled) || result.Acquired || d.fence != math.MaxUint64 {
 		t.Fatal(result, err)
 	}
@@ -75,12 +75,12 @@ func TestFencingConcurrentTokens(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := d.TryAcquireFenced(context.Background(), string(rune('a'+i)), "owner", time.Hour)
+			result, err := d.TryAcquire(context.Background(), string(rune('a'+i)), "owner", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
 			if err != nil || !result.Acquired {
 				t.Error(result, err)
 				return
 			}
-			tokens <- result.Fence
+			tokens <- result.Token
 		}()
 	}
 	wg.Wait()

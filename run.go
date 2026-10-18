@@ -43,7 +43,7 @@ func (l *Locker) TryRun(
 	started := time.Now()
 	request, cancel := context.WithTimeout(ctx, l.operationTimeout)
 	defer cancel()
-	result, acquireErr := l.driver.TryAcquire(request, key, owner, ttl)
+	result, acquireErr := l.driver.TryAcquire(request, key, owner, AcquireOptions{TTL: ttl})
 	requestErr := request.Err()
 	requestDeadline, _ := request.Deadline()
 	cancel()

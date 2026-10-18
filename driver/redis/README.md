@@ -42,7 +42,8 @@ each selected release line. The PostgreSQL workflow similarly covers majors
 ## Explicit fencing
 
 Use `anylock.New(driver, anylock.WithFencing())`. Fenced acquisition uses one
-Lua script to check the lease, INCR a persistent per-key counter, and install
+`TryAcquire` call with `AcquireOptions.Fencing` set, using a Lua script to check
+the lease, INCR a persistent per-key counter, and install
 ownership. The counter key is `<prefix><key>:__anylock_fence`; the suffix is
 reserved and rejected as a logical lease key, even for ordinary operations.
 Reserve the entire physical namespace across applications/prefixes. Counter keys

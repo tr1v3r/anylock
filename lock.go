@@ -71,16 +71,19 @@ func WithAutoRenew() Option {
 	}
 }
 
-// WithFencing requires a FencingDriver and a nonzero token on every successful
-// acquisition. Use TryLock/Lock and atomically validate Lease.Fence at the target
-// storage with each protected write. TryRun/Run reject this option because their
+// WithFencing requests fencing through AcquireOptions on every acquisition.
+// Unsupported drivers return ErrFencingUnsupported when acquiring, not in New.
+// Every successful fenced acquisition must return a nonzero Token. Use
+// TryLock/Lock and atomically validate Lease.Fence at the target storage with
+// each protected write. TryRun/Run reject this option because their
 // callbacks cannot receive a lease token.
 func WithFencing() Option {
 	return func(l *Locker) error { l.fencing = true; return nil }
 }
 
 // New constructs a Locker. A driver (including its underlying value) must be
-// non-nil. Options are applied in order; nil options are rejected.
+// non-nil. Options are applied in order; nil options are rejected. Construction
+// makes no driver calls; fencing support is checked during acquisition.
 func New(driver Driver, options ...Option) (*Locker, error) {
 	if driver == nil || nilValue(driver) {
 		return nil, errors.New("anylock: driver must not be nil")
@@ -92,11 +95,6 @@ func New(driver Driver, options ...Option) (*Locker, error) {
 		}
 		if err := option(l); err != nil {
 			return nil, err
-		}
-	}
-	if l.fencing {
-		if _, ok := driver.(FencingDriver); !ok {
-			return nil, ErrFencingUnsupported
 		}
 	}
 	return l, nil
@@ -136,7 +134,7 @@ func (l *Locker) TryLock(ctx context.Context, key string, ttl time.Duration) (Le
 	started := time.Now()
 	request, cancel := context.WithTimeout(ctx, l.operationTimeout)
 	defer cancel()
-	result, err := l.acquire(request, key, owner, ttl)
+	result, err := l.driver.TryAcquire(request, key, owner, AcquireOptions{TTL: ttl, Fencing: l.fencing})
 	if err != nil {
 		return nil, fmt.Errorf("anylock: acquire %q: %w", key, err)
 	}
@@ -162,7 +160,7 @@ func (l *Locker) TryLock(ctx context.Context, key string, ttl time.Duration) (Le
 		_, cleanupErr := l.driver.Release(cleanup, key, owner)
 		return nil, errors.Join(err, cleanupErr)
 	}
-	lease := newLease(ctx, l, key, owner, ttl, started.Add(ttl), result.Fence)
+	lease := newLease(ctx, l, key, owner, ttl, started.Add(ttl), result.Token)
 	if err := lease.Err(); err != nil {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.operationTimeout)
 		defer cancel()
@@ -202,16 +200,9 @@ func requestError(ctx context.Context) error {
 	return nil
 }
 
-func (l *Locker) acquire(ctx context.Context, key, owner string, ttl time.Duration) (AcquireResult, error) {
-	if l.fencing {
-		return l.driver.(FencingDriver).TryAcquireFenced(ctx, key, owner, ttl)
-	}
-	return l.driver.TryAcquire(ctx, key, owner, ttl)
-}
-
 func (l *Locker) validateAcquire(result AcquireResult) error {
-	if (!result.Acquired && result.Fence != 0) ||
-		(result.Acquired && (result.Fence != 0) != l.fencing) {
+	if (!result.Acquired && result.Token != 0) ||
+		(result.Acquired && (result.Token != 0) != l.fencing) {
 		return ErrInvalidAcquireResult
 	}
 	return nil

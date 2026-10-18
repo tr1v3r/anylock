@@ -57,7 +57,7 @@ platform's monotonic-clock behavior (notably system sleep) remain relevant.
 
 `TryAcquire` creates an absent/expired lease, but returns a zero `AcquireResult`
 for any live lease, **including the same owner**. Ordinary success returns
-`AcquireResult{Acquired: true}` with Fence zero. `Renew` resets only the matching live owner's
+`AcquireResult{Acquired: true}` with Token zero. `Renew` resets only the matching live owner's
 TTL from the current operation; a shorter TTL may shorten ownership. It never
 creates or revives an expired lease. `Release` deletes a stored record only when
 its owner matches, without requiring remaining validity. Operations sweep expired
@@ -254,7 +254,8 @@ A green short smoke alone is not sustained-load evidence.
 ## Explicit fencing
 
 Use `anylock.New(driver, anylock.WithFencing())`. Successful fenced acquisitions
-use an instance-wide `uint64` counter under the same gate as ownership. Renewals
+pass `AcquireOptions{TTL: ttl, Fencing: true}` to `TryAcquire`, using an
+instance-wide `uint64` counter under the same gate as ownership. Renewals
 do not increment it; release/expiry/sweeping never reset it. Exhaustion errors
 before installing a new lease. Tokens are meaningful only while sharing the same
 Driver instance; replacing/restarting it resets the sequence.

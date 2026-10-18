@@ -52,9 +52,9 @@ type Driver struct {
 }
 
 var (
-	_ anylock.FencingDriver = (*Driver)(nil)
-	_ Client                = (*goredis.Client)(nil)
-	_ Client                = (*goredis.ClusterClient)(nil)
+	_ anylock.Driver = (*Driver)(nil)
+	_ Client         = (*goredis.Client)(nil)
+	_ Client         = (*goredis.ClusterClient)(nil)
 )
 
 const renewScript = `
@@ -108,15 +108,20 @@ func New(client Client, prefix string) (*Driver, error) {
 
 // TryAcquire atomically creates an absent lease. Acquired false means the key is already
 // held, even when owner matches; acquisition is not a renewal operation.
-func (d *Driver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (anylock.AcquireResult, error) {
+func (d *Driver) TryAcquire(
+	ctx context.Context, key, owner string, opts anylock.AcquireOptions,
+) (anylock.AcquireResult, error) {
 	if err := d.validate(ctx, key, owner); err != nil {
 		return anylock.AcquireResult{}, err
 	}
 	ctx, cancel := operationContext(ctx)
 	defer cancel()
-	milliseconds, err := ttlMilliseconds(ttl)
+	milliseconds, err := ttlMilliseconds(opts.TTL)
 	if err != nil {
 		return anylock.AcquireResult{}, err
+	}
+	if opts.Fencing {
+		return d.acquireFenced(ctx, key, owner, milliseconds)
 	}
 	cmd := d.client.Do(ctx, "SET", d.prefix+key, owner, "NX", "PX", milliseconds)
 	if cmd == nil {
@@ -240,21 +245,12 @@ redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 return token
 `
 
-// TryAcquireFenced atomically reserves a key and increments its persistent
-// counter. Redis Cluster requires a nonempty hash tag in prefix/key so both keys
-// share a slot. Counter loss/rollback (including failover) breaks monotonicity.
-func (d *Driver) TryAcquireFenced(
-	ctx context.Context, key, owner string, ttl time.Duration,
+// acquireFenced uses the validated request context and rounded TTL from TryAcquire.
+// Redis Cluster requires a nonempty hash tag so both keys share a slot. Counter
+// loss or rollback (including failover) breaks monotonicity.
+func (d *Driver) acquireFenced(
+	ctx context.Context, key, owner string, milliseconds int64,
 ) (anylock.AcquireResult, error) {
-	if err := d.validate(ctx, key, owner); err != nil {
-		return anylock.AcquireResult{}, err
-	}
-	milliseconds, err := ttlMilliseconds(ttl)
-	if err != nil {
-		return anylock.AcquireResult{}, err
-	}
-	ctx, cancel := operationContext(ctx)
-	defer cancel()
 	physical := d.prefix + key
 	cmd := d.client.Eval(ctx, acquireFencedScript, []string{physical, physical + fenceSuffix}, owner, milliseconds)
 	if cmd == nil {
@@ -275,5 +271,5 @@ func (d *Driver) TryAcquireFenced(
 	if err != nil || token == 0 {
 		return anylock.AcquireResult{}, errors.New("anylock/redis: fenced acquire: invalid token")
 	}
-	return anylock.AcquireResult{Acquired: true, Fence: token}, nil
+	return anylock.AcquireResult{Acquired: true, Token: token}, nil
 }

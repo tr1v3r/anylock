@@ -2,9 +2,9 @@
 
 ```go
 locker, err := anylock.New(driver, anylock.WithFencing())
-if err != nil { return err } // unsupported driver fails at construction
-lease, err := locker.Lock(ctx, key, ttl)
 if err != nil { return err }
+lease, err := locker.Lock(ctx, key, ttl)
+if err != nil { return err } // includes ErrFencingUnsupported from the driver
 defer lease.Release(cleanupCtx) // independent live, bounded cleanup context
 token, enabled := lease.Fence()
 if !enabled { return errors.New("fencing required") }
@@ -21,13 +21,16 @@ core examples for a downstream high-water mark that rejects a stale owner.
 ## Acquisition and lifetime contract
 
 - `err != nil`: failed or uncertain outcome. Ignore the result and do no work.
-- `Acquired == false`: contention, Fence must be zero.
-- `Acquired == true`: success. Fence is zero for ordinary acquisition and strictly
+- `Acquired == false`: contention, Token must be zero.
+- `Acquired == true`: success. Token is zero for ordinary acquisition and strictly
   positive when explicitly requested. Invalid results return
   `ErrInvalidAcquireResult`; known acquired ownership is best-effort cleaned up.
-- `WithFencing()` requires `FencingDriver.TryAcquireFenced`. Its acquisition must
-  contend with ordinary `TryAcquire` in the same namespace. Capability wrappers
-  must explicitly forward this interface; otherwise construction rejects them.
+- `WithFencing()` sets `AcquireOptions.Fencing` on the single `Driver.TryAcquire`
+  request; `AcquireOptions.TTL` carries the TTL. Ordinary and fenced acquisition
+  share the same method, namespace and owner protocol. There is no capability
+  interface, separate acquisition method, or fallback. `New` does not check
+  backend capabilities. Unsupported drivers must return `ErrFencingUnsupported`
+  before granting ownership, including when reached through wrappers.
 - Each successful fenced acquisition has a new, strictly increasing token for
   that key in its backend's declared fault model. Tokens may have gaps and are
   not timestamps or business operation IDs. A retry after an uncertain outcome
@@ -86,16 +89,38 @@ Redis returns the counter via GET's decimal string, preserving precision beyond
 Lua's numeric range; INCR remains bounded by signed 64-bit arithmetic. See
 [Redis INCR](https://redis.io/docs/latest/commands/incr/).
 
-## API migration
+## Driver protocol
 
-`Driver.TryAcquire` now returns `AcquireResult` instead of bool. Custom ordinary
-drivers return `AcquireResult{Acquired: ok}` with Fence zero. Direct callers use
-`result.Acquired`; Renew and Release still return bool. Implementing
-`TryAcquireFenced` explicitly declares capability. Add `Fence() (uint64, bool)`
-to custom Lease implementations; ordinary leases return `(0, false)`. Decorators
-must forward Fence along with the other Lease methods.
+```go
+type AcquireOptions struct {
+    TTL time.Duration
+    Fencing bool
+}
 
-Built-in driver clients, owner matching, ordinary acquisition, and lease table
-layout remain the same. Redis reserves the `:__anylock_fence` key suffix.
-PostgreSQL fenced callers must explicitly provision its sequence. For nested
-module publishing and the old core pin limitation, see [MODULES.md](../MODULES.md).
+type AcquireResult struct {
+    Acquired bool
+    Token uint64
+}
+
+type Driver interface {
+    TryAcquire(ctx context.Context, key, owner string, opts AcquireOptions) (AcquireResult, error)
+    Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
+    Release(ctx context.Context, key, owner string) (bool, error)
+}
+```
+
+An ordinary acquisition returns `AcquireResult{Acquired: true}` on success. With
+`opts.Fencing`, success requires a strictly positive Token. An unsupported driver
+returns the zero result and `ErrFencingUnsupported`, without acquiring the key.
+Every backend error takes precedence over its result; there is no valid lease
+or token to use after an error. The core additionally rejects malformed results,
+including a successful fenced acquisition with Token zero.
+
+Renew and Release continue to check the owner; they need no fenced variants.
+Custom Lease implementations expose `Fence() (uint64, bool)`; ordinary leases
+return `(0, false)`. Decorators forward Fence along with the other Lease methods.
+
+Built-in driver clients, owner matching, and lease table layout remain the same.
+Redis reserves the `:__anylock_fence` key suffix. PostgreSQL fenced callers must
+explicitly provision its sequence. For nested-module publishing and old core pin
+constraints, see [MODULES.md](../MODULES.md).

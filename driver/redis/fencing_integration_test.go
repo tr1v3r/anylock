@@ -49,23 +49,23 @@ func TestIntegrationRedisFencing(t *testing.T) {
 	if operationErr := first.Renew(ctx); operationErr != nil {
 		t.Fatal(operationErr)
 	}
-	if busy, operationErr := d.TryAcquireFenced(ctx, "key", "other", time.Second); operationErr != nil || busy.Acquired || busy.Fence != 0 {
+	if busy, operationErr := d.TryAcquire(ctx, "key", "other", anylock.AcquireOptions{TTL: time.Second, Fencing: true}); operationErr != nil || busy.Acquired || busy.Token != 0 {
 		t.Fatal(busy, operationErr)
 	}
 	if operationErr := first.Release(ctx); operationErr != nil {
 		t.Fatal(operationErr)
 	}
 	other, _ := newDriver(t, addr, prefix)
-	second, err := other.TryAcquireFenced(ctx, "key", "successor", 20*time.Millisecond)
-	if err != nil || second.Fence != token+1 {
+	second, err := other.TryAcquire(ctx, "key", "successor", anylock.AcquireOptions{TTL: 20 * time.Millisecond, Fencing: true})
+	if err != nil || second.Token != token+1 {
 		t.Fatal(second, err)
 	}
 	waitForRealExpiry(t, ctx, func() (bool, error) {
 		n, existsErr := client.Exists(ctx, prefix+"key").Result()
 		return n == 0, existsErr
 	})
-	third, err := d.TryAcquireFenced(ctx, "key", "third", time.Hour)
-	if err != nil || third.Fence != second.Fence+1 {
+	third, err := d.TryAcquire(ctx, "key", "third", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+	if err != nil || third.Token != second.Token+1 {
 		t.Fatal(third, err)
 	}
 }

@@ -40,7 +40,7 @@ type Driver struct {
 	fence   uint64
 }
 
-var _ anylock.FencingDriver = (*Driver)(nil)
+var _ anylock.Driver = (*Driver)(nil)
 
 type entry struct {
 	key     string
@@ -82,22 +82,13 @@ func New() *Driver {
 
 // TryAcquire atomically reserves an absent or expired key for ttl. A live key
 // returns Acquired false even when owner matches: acquiring is not renewing. Direct callers
-// must use a fresh, unguessable owner for every new acquisition attempt.
-func (d *Driver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (anylock.AcquireResult, error) {
-	return d.acquire(ctx, key, owner, ttl, false)
-}
-
-// TryAcquireFenced binds ownership to a new instance-wide monotonic token. The
-// counter survives expiry/release/sweeping, but not process/Driver replacement.
-func (d *Driver) TryAcquireFenced(
-	ctx context.Context, key, owner string, ttl time.Duration,
+// must use a fresh, unguessable owner for every new acquisition attempt. Fencing
+// uses an instance-wide counter that survives expiry/release/sweeping, but not
+// process or Driver replacement.
+func (d *Driver) TryAcquire(
+	ctx context.Context, key, owner string, opts anylock.AcquireOptions,
 ) (anylock.AcquireResult, error) {
-	return d.acquire(ctx, key, owner, ttl, true)
-}
-
-func (d *Driver) acquire(
-	ctx context.Context, key, owner string, ttl time.Duration, fenced bool,
-) (anylock.AcquireResult, error) {
+	ttl := opts.TTL
 	if err := d.validate(ctx, key, owner); err != nil {
 		return anylock.AcquireResult{}, err
 	}
@@ -116,7 +107,7 @@ func (d *Driver) acquire(
 		d.remove(e)
 	}
 	var fence uint64
-	if fenced {
+	if opts.Fencing {
 		if d.fence == math.MaxUint64 {
 			return anylock.AcquireResult{}, errors.New("anylock/memory: fence exhausted")
 		}
@@ -132,7 +123,7 @@ func (d *Driver) acquire(
 	if err := requestError(ctx); err != nil {
 		return anylock.AcquireResult{}, err
 	}
-	return anylock.AcquireResult{Acquired: true, Fence: fence}, nil
+	return anylock.AcquireResult{Acquired: true, Token: fence}, nil
 }
 
 // Renew atomically resets the matching live owner's expiry to ttl from this

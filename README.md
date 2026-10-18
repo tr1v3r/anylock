@@ -369,13 +369,18 @@ separate live cleanup context. A failed release can leave ownership until TTL.
 ## Driver contract
 
 ```go
+type AcquireOptions struct {
+    TTL time.Duration
+    Fencing bool
+}
+
 type AcquireResult struct {
     Acquired bool
-    Fence uint64 // zero for ordinary acquisition
+    Token uint64 // zero for ordinary acquisition
 }
 
 type Driver interface {
-    TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (AcquireResult, error)
+    TryAcquire(ctx context.Context, key, owner string, opts AcquireOptions) (AcquireResult, error)
     Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
     Release(ctx context.Context, key, owner string) (bool, error)
 }
@@ -386,8 +391,8 @@ absent/expired key, owner-checked renewal, and owner-checked release must each b
 atomic. Renew requires a live owner and cannot revive expired leases. Release
 checks owner, not expiry, and may delete an expired record that remains stored;
 stale owners cannot touch successors. TTLs must not be rounded down.
-`AcquireResult.Acquired == false` means contention and requires a zero Fence.
-Ordinary acquisition returns Fence zero. Renewal/release retain their bool results.
+`AcquireResult.Acquired == false` means contention and requires a zero Token.
+Ordinary acquisition returns Token zero. Renewal/release retain their bool results.
 False means lost ownership for renew, or no matching stored record for release. Release's bool reports deletion, not prior validity; expired records may
 already have been reclaimed. Errors are failures with potentially ambiguous
 outcomes. A file driver needs real cross-process atomic coordination and
@@ -400,8 +405,11 @@ keys. It accepts go-redis's normal/cluster clients through a small Do/Eval inter
 
 ## Safety boundaries
 
-Leases carry fencing tokens only with `New(driver, WithFencing())`. Drivers must
-implement `FencingDriver`; unsupported drivers are rejected at construction.
+Leases carry fencing tokens only with `New(driver, WithFencing())`. The core
+passes `AcquireOptions{TTL: ttl, Fencing: true}` to the same `Driver.TryAcquire`
+used for ordinary locks. A driver that does not support fencing must return
+`ErrFencingUnsupported` without granting ownership. Construction does not probe
+driver capabilities; unsupported fencing is reported when acquiring.
 `token, enabled := lease.Fence()` exposes the immutable acquisition token.
 Renewal never changes it; an expired/released handle is never new authorization.
 `TryRun`/`Run` reject fencing because they do not expose a lease/token. See the

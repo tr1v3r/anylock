@@ -353,7 +353,7 @@ All drivers participating in one lock domain must share the same sequence.
 CREATE SEQUENCE public.anylock_fences AS bigint NO CYCLE CACHE 1;
 ```
 
-Fenced acquisition uses an UPSERT CTE and allocates `nextval` in its outer SELECT
+`TryAcquire` with `AcquireOptions.Fencing` uses an UPSERT CTE and allocates `nextval` in its outer SELECT
 only after the row was acquired, while the row lock is still held. This prevents
 a blocked UPSERT from reserving an older token before its predecessor. A busy row
 returns no token; renew/release never touch the sequence. Tokens span positive

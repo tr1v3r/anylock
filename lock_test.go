@@ -72,7 +72,7 @@ func (d hookedDriver) tryAcquire(ctx context.Context, key, owner string, ttl tim
 	if d.acquire != nil {
 		return d.acquire(ctx, key, owner, ttl)
 	}
-	result, err := d.Driver.TryAcquire(ctx, key, owner, ttl)
+	result, err := d.Driver.TryAcquire(ctx, key, owner, AcquireOptions{TTL: ttl})
 	return result.Acquired, err
 }
 
@@ -478,12 +478,20 @@ func TestConcurrentOwnershipAndLeaseOperations(t *testing.T) {
 	wg.Wait()
 }
 
-func (d *memoryDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (AcquireResult, error) {
+func (d *memoryDriver) TryAcquire(ctx context.Context, key, owner string, opts AcquireOptions) (AcquireResult, error) {
+	if opts.Fencing {
+		return AcquireResult{}, ErrFencingUnsupported
+	}
+	ttl := opts.TTL
 	ok, err := d.tryAcquire(ctx, key, owner, ttl)
 	return AcquireResult{Acquired: ok}, err
 }
 
-func (d hookedDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (AcquireResult, error) {
+func (d hookedDriver) TryAcquire(ctx context.Context, key, owner string, opts AcquireOptions) (AcquireResult, error) {
+	if opts.Fencing {
+		return AcquireResult{}, ErrFencingUnsupported
+	}
+	ttl := opts.TTL
 	ok, err := d.tryAcquire(ctx, key, owner, ttl)
 	return AcquireResult{Acquired: ok}, err
 }

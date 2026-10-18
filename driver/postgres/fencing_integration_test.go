@@ -49,7 +49,7 @@ func TestIntegrationPostgresFencingLifecycle(t *testing.T) {
 	if !enabled || token == 0 {
 		t.Fatal(token, enabled)
 	}
-	if busy, operationErr := f.driver.TryAcquireFenced(f.ctx, "key", "intruder", time.Hour); operationErr != nil || busy.Acquired || busy.Fence != 0 {
+	if busy, operationErr := f.driver.TryAcquire(f.ctx, "key", "intruder", anylock.AcquireOptions{TTL: time.Hour, Fencing: true}); operationErr != nil || busy.Acquired || busy.Token != 0 {
 		t.Fatal(busy, operationErr)
 	}
 	if operationErr := first.Renew(f.ctx); operationErr != nil {
@@ -64,8 +64,8 @@ func TestIntegrationPostgresFencingLifecycle(t *testing.T) {
 	// A second Driver shares the same lock and sequence domains.
 	other := f.anotherDriver(t, f.prefix)
 	other.sequence = f.driver.sequence
-	second, err := other.TryAcquireFenced(f.ctx, "key", "successor", time.Hour)
-	if err != nil || !second.Acquired || second.Fence <= token {
+	second, err := other.TryAcquire(f.ctx, "key", "successor", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+	if err != nil || !second.Acquired || second.Token <= token {
 		t.Fatal(second, err)
 	}
 	if ok, operationErr := f.driver.Release(f.ctx, "key", "not-owner"); ok || operationErr != nil {
@@ -75,8 +75,8 @@ func TestIntegrationPostgresFencingLifecycle(t *testing.T) {
 	if _, operationErr := f.db.ExecContext(f.ctx, "DELETE FROM "+f.quotedTable()); operationErr != nil {
 		t.Fatal(operationErr)
 	}
-	third, err := other.TryAcquireFenced(f.ctx, "key", "after-purge", time.Hour)
-	if err != nil || third.Fence <= second.Fence {
+	third, err := other.TryAcquire(f.ctx, "key", "after-purge", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+	if err != nil || third.Token <= second.Token {
 		t.Fatal(third, err)
 	}
 }
@@ -90,7 +90,7 @@ func TestIntegrationPostgresFenceAllocatedAfterRowLock(t *testing.T) {
 	}
 	finished := make(chan reply, 1)
 	go func() {
-		result, err := f.driver.TryAcquireFenced(f.ctx, "blocked", "successor", time.Hour)
+		result, err := f.driver.TryAcquire(f.ctx, "blocked", "successor", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
 		finished <- reply{result, err}
 	}()
 	f.waitBlocked(t, pid)
@@ -116,7 +116,7 @@ func TestIntegrationPostgresFenceAllocatedAfterRowLock(t *testing.T) {
 	}
 	select {
 	case r := <-finished:
-		if r.err != nil || !r.result.Acquired || r.result.Fence <= uint64(previous) {
+		if r.err != nil || !r.result.Acquired || r.result.Token <= uint64(previous) {
 			t.Fatal(r.result, r.err, previous)
 		}
 	case <-f.ctx.Done():
@@ -129,8 +129,8 @@ func TestIntegrationPostgresFenceExhaustionRollsBackOwnership(t *testing.T) {
 	if _, operationErr := f.db.ExecContext(f.ctx, "SELECT setval($1::regclass,$2,true)", f.driver.sequence, int64(math.MaxInt64)); operationErr != nil {
 		t.Fatal(operationErr)
 	}
-	result, err := f.driver.TryAcquireFenced(f.ctx, "overflow", "owner", time.Hour)
-	if err == nil || result.Acquired || result.Fence != 0 {
+	result, err := f.driver.TryAcquire(f.ctx, "overflow", "owner", anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+	if err == nil || result.Acquired || result.Token != 0 {
 		t.Fatal(result, err)
 	}
 	f.requireAbsent(t, "overflow")
@@ -141,11 +141,11 @@ func TestIntegrationPostgresFencedSuccessorSequence(t *testing.T) {
 	var previous uint64
 	for i := range 20 {
 		owner := fmt.Sprint(i)
-		result, err := f.driver.TryAcquireFenced(f.ctx, "key", owner, time.Hour)
-		if err != nil || !result.Acquired || result.Fence <= previous {
+		result, err := f.driver.TryAcquire(f.ctx, "key", owner, anylock.AcquireOptions{TTL: time.Hour, Fencing: true})
+		if err != nil || !result.Acquired || result.Token <= previous {
 			t.Fatal(result, err, previous)
 		}
-		previous = result.Fence
+		previous = result.Token
 		if ok, operationErr := f.driver.Release(f.ctx, "key", owner); !ok || operationErr != nil {
 			t.Fatal(ok, operationErr)
 		}
