@@ -12,11 +12,6 @@ go get github.com/tr1v3r/anylock/driver/redis
 # Or: /driver/postgres, /driver/memory
 ```
 
-> Core v0.3.0 changes the Driver and Lease interfaces. The driver modules are
-> migrated and released separately; use matching releases. During this transition,
-> validate modules with `GOWORK=off`; the local workspace becomes usable again
-> after all drivers and integration pins are updated.
-
 ## Choose the behavior
 
 | API | Purpose | After work finishes | Renewal |

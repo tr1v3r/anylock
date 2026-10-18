@@ -5,9 +5,6 @@ on:
     branches: [master]
   pull_request:
 
-env:
-  GOWORK: 'off'
-
 jobs:
   postgres:
     name: PostgreSQL ${{ matrix.postgres }} (Go ${{ matrix.go }})
@@ -40,8 +37,14 @@ jobs:
           cache-dependency-path: '**/go.sum'
       - name: Record PostgreSQL server version
         run: docker exec "${{ job.services.postgres.id }}" postgres --version
-      - name: Test real PostgreSQL against released core with ownership, expiry, deadlines, and fencing
+      - name: Test real PostgreSQL ownership, expiry, deadlines, and fencing
         env:
           ANYLOCK_POSTGRES_DSN: postgres://anylock:anylock-test-only@127.0.0.1:5432/anylock?sslmode=disable
+        working-directory: driver/postgres
+        run: go test -race -count=1 -tags=integration ./...
+      - name: Test real PostgreSQL with the published core pin
+        env:
+          ANYLOCK_POSTGRES_DSN: postgres://anylock:anylock-test-only@127.0.0.1:5432/anylock?sslmode=disable
+          GOWORK: 'off'
         working-directory: driver/postgres
         run: go test -race -count=1 -tags=integration ./...

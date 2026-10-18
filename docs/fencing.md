@@ -72,10 +72,6 @@ accepted tokens or establish a separate resource epoch enforced by storage.
 
 ## Backend scope
 
-The following implementations are released in separate driver PRs after core
-v0.3.0. Use a compatible driver release; old driver releases implement the old
-interface.
-
 | Driver | Counter | Required assumptions |
 | --- | --- | --- |
 | memory | Instance-wide uint64, protected by the ownership gate | Same live Driver instance; restarts/replacement reset state |
@@ -130,5 +126,5 @@ return `(0, false)`. Decorators forward FencingToken along with the other Lease 
 
 Built-in driver clients, owner matching, and lease table layout remain the same.
 Redis encodes physical lease and counter keys with the same hash tag.
-PostgreSQL fenced callers must explicitly provision its sequence. For nested-module publishing and old core pin
-constraints, see [MODULES.md](../MODULES.md).
+PostgreSQL fenced callers must explicitly provision its sequence. For the compatible release set and nested-module publishing order, see
+[MODULES.md](../MODULES.md).

@@ -73,14 +73,24 @@ When adding a module, add it to `go.work` and the lint matrix in CI. The test sc
 discovers its `go.mod` automatically. Include its own license notice, pin a
 compatible core version, and keep backend-specific test dependencies local.
 
-## Core v0.3 migration
+## Fencing release set
 
-The core changes `Driver.TryAcquire` to `AcquireRequest` / `AcquireResult` and adds
-`Lease.FencingToken`. Drivers migrate in separate PRs after the core release.
-Until all driver sources and integration pins have migrated, `go.work` combines
-incompatible API generations. CI therefore runs every module with `GOWORK=off`,
-including real backend and stress tests, against its declared released dependencies.
-The core is tested directly and remains standard-library-only. No module checks
-are skipped and no local-path replacements are distributed. After the driver
-releases, update integration pins and restore workspace checks alongside the
-independent-module checks.
+The compatible fencing release set is:
+
+| Module | Released version | Core requirement |
+| --- | --- | --- |
+| Core | `v0.3.0` | Standard library only |
+| Memory driver | `driver/memory/v0.2.0` | `v0.3.0` |
+| Redis driver | `driver/redis/v0.2.0` | `v0.3.0` |
+| PostgreSQL driver | `driver/postgres/v0.3.0` | `v0.3.0` |
+
+The core changes `Driver.TryAcquire` to `AcquireRequest` / `AcquireResult` and
+adds `Lease.FencingToken`. These versions intentionally break the older interface.
+Core and drivers were tested, merged and released in separate PRs in dependency
+order. The integration test harness pins the released core and Redis driver.
+
+Workspace CI tests the current local sources together. Independent-module CI
+uses `GOWORK=off` and the released pins without local replacements, including
+real PostgreSQL integration. Both checks must pass; workspace success alone
+does not prove the independently downloadable modules work together. Backend
+version matrices and real Redis Cluster tests remain enabled.

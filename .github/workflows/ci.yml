@@ -5,10 +5,6 @@ on:
     branches: [master]
   pull_request:
 
-# Validate each module against its declared released dependencies during API migrations.
-env:
-  GOWORK: 'off'
-
 jobs:
   lint:
     name: Lint (${{ matrix.module }})
@@ -40,7 +36,7 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache-dependency-path: '**/go.sum'
-      - name: Test every module against its declared dependencies with race detection
+      - name: Test every workspace module with race detection
         run: ./scripts/modules.sh go test -race -count=1 ./...
       - name: Coverage for every module
         run: ./scripts/modules.sh go test -count=1 -coverprofile=coverage.out ./...

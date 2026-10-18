@@ -23,7 +23,7 @@ on:
 permissions:
   contents: read
 
-# Validate each module against its declared released dependencies during API migrations.
+# Stress diagnostics exercise each driver against its declared released core.
 env:
   GOWORK: 'off'
 

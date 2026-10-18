@@ -4,8 +4,8 @@ go 1.24.0
 
 require (
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/tr1v3r/anylock v0.1.0
-	github.com/tr1v3r/anylock/driver/redis v0.1.0
+	github.com/tr1v3r/anylock v0.3.0
+	github.com/tr1v3r/anylock/driver/redis v0.2.0
 )
 
 require (
