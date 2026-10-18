@@ -23,6 +23,10 @@ on:
 permissions:
   contents: read
 
+# Validate each module against its declared released dependencies during API migrations.
+env:
+  GOWORK: 'off'
+
 jobs:
   memory-stress:
     name: Memory stress (race diagnostics)

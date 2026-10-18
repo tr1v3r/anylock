@@ -35,7 +35,7 @@ func newCleanupDriver() *cleanupDriver {
 	return &cleanupDriver{records: make(map[string]cleanupRecord)}
 }
 
-func (d *cleanupDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+func (d *cleanupDriver) tryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -472,4 +472,14 @@ func TestReleaseCleanupStopsAutoRenewBeforeRetry(t *testing.T) {
 		t.Errorf("driver release/renew calls = %d/%d; want 2/1", releases, renews)
 	}
 	assertCleanupInvalid(t, lease, anylock.ErrClosed)
+}
+
+func (d *cleanupDriver) TryAcquire(ctx context.Context, req anylock.AcquireRequest) (anylock.AcquireResult, error) {
+	key, owner := req.Key, req.Owner
+	if req.Fencing {
+		return anylock.AcquireResult{}, anylock.ErrFencingUnsupported
+	}
+	ttl := req.TTL
+	ok, err := d.tryAcquire(ctx, key, owner, ttl)
+	return anylock.AcquireResult{Acquired: ok}, err
 }

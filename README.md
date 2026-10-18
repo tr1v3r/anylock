@@ -12,6 +12,11 @@ go get github.com/tr1v3r/anylock/driver/redis
 # Or: /driver/postgres, /driver/memory
 ```
 
+> Core v0.3.0 changes the Driver and Lease interfaces. The driver modules are
+> migrated and released separately; use matching releases. During this transition,
+> validate modules with `GOWORK=off`; the local workspace becomes usable again
+> after all drivers and integration pins are updated.
+
 ## Choose the behavior
 
 | API | Purpose | After work finishes | Renewal |
@@ -27,7 +32,8 @@ same key contend. Reserve distinct prefixes/keys when their domains should diffe
 Each driver is a separate module. All three support both execution gates and
 leases; the backend determines where callers coordinate and how expiry is stored.
 The core and every driver have the same cooperative safety limits described
-[below](#safety-boundaries), including no fencing or exactly-once guarantee.
+[below](#safety-boundaries). Leases support [explicit fencing](docs/fencing.md);
+protected storage must validate tokens, and exactly-once execution is not promised.
 
 | Driver | Main dependencies and characteristics | Atomic operations and expiry | Suitable uses |
 | --- | --- | --- | --- |
@@ -368,8 +374,20 @@ separate live cleanup context. A failed release can leave ownership until TTL.
 ## Driver contract
 
 ```go
+type AcquireRequest struct {
+    Key string
+    Owner string
+    TTL time.Duration
+    Fencing bool
+}
+
+type AcquireResult struct {
+    Acquired bool
+    FencingToken uint64 // zero for ordinary acquisition
+}
+
 type Driver interface {
-    TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
+    TryAcquire(ctx context.Context, req AcquireRequest) (AcquireResult, error)
     Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
     Release(ctx context.Context, key, owner string) (bool, error)
 }
@@ -379,30 +397,44 @@ Drivers must be concurrent-safe and honor operation deadlines. Acquisition of an
 absent/expired key, owner-checked renewal, and owner-checked release must each be
 atomic. Renew requires a live owner and cannot revive expired leases. Release
 checks owner, not expiry, and may delete an expired record that remains stored;
-stale owners cannot touch successors. TTLs must not be rounded down. False means
-contention/lost ownership for acquire/renew, or no matching stored record for
-release. Release's bool reports deletion, not prior validity; expired records may
+stale owners cannot touch successors. TTLs must not be rounded down.
+`AcquireResult.Acquired == false` means contention and requires a zero FencingToken.
+Ordinary acquisition returns FencingToken zero. Renewal/release retain their bool
+results.
+False means lost ownership for renew, or no matching stored record for release. Release's bool reports deletion, not prior validity; expired records may
 already have been reclaimed. Errors are failures with potentially ambiguous
 outcomes. A file driver needs real cross-process atomic coordination and
 expiration checks for acquisition/renewal; plain file read/write is insufficient.
 
 The Redis driver uses one `SET ... NX PX ...`, and Lua owner-check-plus-`PEXPIRE`
 or owner-check-plus-`DEL`. Sub-millisecond TTLs round up, never down. Prefixes are
-concatenated literally; reserve a namespace and avoid collisions with unrelated
-keys. It accepts go-redis's normal/cluster clients through a small Do/Eval interface.
+combined with logical keys and hex-encoded into automatic Redis hash tags.
+Lease and persistent counter keys share a slot in every mode; reserve that
+encoded namespace from unrelated writes. It accepts go-redis's normal/cluster
+clients through a small Do/Eval interface.
 
 ## Safety boundaries
 
-Neither execution gates nor leases provide fencing, exactly-once execution, or a
-complete business-idempotency solution. An expired or paused owner can continue executing
+Leases carry fencing tokens only with `New(driver, WithFencing())`. The core
+passes `AcquireRequest{Key: key, Owner: owner, TTL: ttl, Fencing: true}` to
+`Driver.TryAcquire`, the same entry point
+used for ordinary locks. A driver that does not support fencing must return
+`ErrFencingUnsupported` without granting ownership. Construction does not probe
+driver capabilities; unsupported fencing is reported when acquiring.
+`token, enabled := lease.FencingToken()` exposes the immutable acquisition token.
+Renewal never changes it; an expired/released handle is never new authorization.
+`WithFencing` affects only `TryLock`/`Lock`; `TryRun`/`Run` always use ordinary
+fixed-TTL reservations and expose no fencing token. See the
+[fencing contract, backend limits and migration guide](docs/fencing.md).
+
+Neither mode provides exactly-once execution or a complete business-idempotency solution. An expired or paused owner can continue executing
 application code; cancellation cannot forcibly stop it or undo side effects.
 For correctness-critical external mutations, the target resource needs fencing,
 transactions, unique constraints, or another independent safety mechanism.
 
 Redis asynchronous failover may lose an acknowledged lock; clock changes,
 partitions and process pauses also affect the safety model. No Redlock/quorum
-algorithm, reentrancy, fairness, multi-key transactions, or fencing tokens are
-provided. Core abstractions do not strengthen a backend's actual guarantees.
+algorithm, reentrancy, fairness, or multi-key transactions are provided. Core abstractions do not strengthen a backend's actual guarantees.
 
 ## Executable examples
 
@@ -432,10 +464,13 @@ ANYLOCK_REDIS_ADDR=127.0.0.1:6379 ./scripts/modules.sh go test -race -tags=integ
 ```
 
 PostgreSQL tests use sqlmock by default; see its [driver guide](driver/postgres/README.md)
-for PostgreSQL 12/16 integration tests. The [memory driver](driver/memory/README.md)
-has deterministic expiry and concurrency tests, plus optional stress diagnostics.
+for PostgreSQL 12–18 × Go 1.24/stable integration tests. The
+[memory driver](driver/memory/README.md) has deterministic expiry and concurrency
+tests, plus optional stress diagnostics.
 
-Default Redis tests use miniredis and exercise owner checks, expiry, Lua,
+Real Redis CI covers 6.2, 7.2, 7.4, 8.2, 8.4, 8.6, 8.8 and 8.10, each with
+Go 1.24/stable and race detection. Default Redis tests use miniredis and exercise
+owner checks, expiry, Lua,
 contention, rounding and failure responses. Core tests include a memory driver,
 concurrency/cancellation scenarios, plus Go 1.25+ virtual-time tests for renewal,
 expiry, conservative deadlines and stalled requests. Core/default tests also

@@ -10,12 +10,14 @@ import (
 )
 
 var (
-	ErrNotAcquired = errors.New("anylock: lease not acquired")
-	ErrLeaseLost   = errors.New("anylock: lease lost")
-	ErrClosed      = errors.New("anylock: lease handle closed")
-	ErrInvalidTTL  = errors.New("anylock: TTL must be positive")
-	ErrInvalidKey  = errors.New("anylock: key must not be empty")
-	ErrNilFunc     = errors.New("anylock: callback must not be nil")
+	ErrFencingUnsupported   = errors.New("anylock: driver does not support fencing")
+	ErrInvalidAcquireResult = errors.New("anylock: invalid driver acquisition result")
+	ErrNotAcquired          = errors.New("anylock: lease not acquired")
+	ErrLeaseLost            = errors.New("anylock: lease lost")
+	ErrClosed               = errors.New("anylock: lease handle closed")
+	ErrInvalidTTL           = errors.New("anylock: TTL must be positive")
+	ErrInvalidKey           = errors.New("anylock: key must not be empty")
+	ErrNilFunc              = errors.New("anylock: callback must not be nil")
 )
 
 // Locker coordinates fixed-TTL execution gates and lease handles over a Driver.
@@ -26,6 +28,7 @@ type Locker struct {
 	retryInterval    time.Duration
 	operationTimeout time.Duration
 	autoRenew        bool
+	fencing          bool
 }
 
 // Option configures a Locker before it is shared with other goroutines.
@@ -67,8 +70,19 @@ func WithAutoRenew() Option {
 	}
 }
 
+// WithFencing requests fencing for TryLock/Lock through AcquireRequest.
+// It has no effect on TryRun/Run, which remain ordinary fixed-TTL execution gates.
+// Unsupported drivers return ErrFencingUnsupported when acquiring, not in New.
+// Every successful fenced acquisition must return a nonzero FencingToken. Use
+// TryLock/Lock and atomically validate Lease.FencingToken at the target storage with
+// each protected write.
+func WithFencing() Option {
+	return func(l *Locker) error { l.fencing = true; return nil }
+}
+
 // New constructs a Locker. A driver (including its underlying value) must be
-// non-nil. Options are applied in order; nil options are rejected.
+// non-nil. Options are applied in order; nil options are rejected. Construction
+// makes no driver calls; fencing support is checked during acquisition.
 func New(driver Driver, options ...Option) (*Locker, error) {
 	if driver == nil || nilValue(driver) {
 		return nil, errors.New("anylock: driver must not be nil")
@@ -119,13 +133,13 @@ func (l *Locker) TryLock(ctx context.Context, key string, ttl time.Duration) (Le
 	started := time.Now()
 	request, cancel := context.WithTimeout(ctx, l.operationTimeout)
 	defer cancel()
-	acquired, err := l.driver.TryAcquire(request, key, owner, ttl)
+	result, err := l.driver.TryAcquire(request, AcquireRequest{Key: key, Owner: owner, TTL: ttl, Fencing: l.fencing})
 	if err != nil {
 		return nil, fmt.Errorf("anylock: acquire %q: %w", key, err)
 	}
 	if requestErr := requestError(request); requestErr != nil {
 		err := fmt.Errorf("anylock: acquire %q: %w", key, requestErr)
-		if !acquired {
+		if !result.Acquired {
 			return nil, err
 		}
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.operationTimeout)
@@ -133,10 +147,19 @@ func (l *Locker) TryLock(ctx context.Context, key string, ttl time.Duration) (Le
 		_, cleanupErr := l.driver.Release(cleanup, key, owner)
 		return nil, errors.Join(ErrLeaseLost, err, cleanupErr)
 	}
-	if !acquired {
+	if !result.Acquired {
+		if err := validateAcquire(result, l.fencing); err != nil {
+			return nil, err
+		}
 		return nil, ErrNotAcquired
 	}
-	lease := newLease(ctx, l, key, owner, ttl, started.Add(ttl))
+	if err := validateAcquire(result, l.fencing); err != nil {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.operationTimeout)
+		defer cancel()
+		_, cleanupErr := l.driver.Release(cleanup, key, owner)
+		return nil, errors.Join(err, cleanupErr)
+	}
+	lease := newLease(ctx, l, key, owner, ttl, started.Add(ttl), result.FencingToken)
 	if err := lease.Err(); err != nil {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.operationTimeout)
 		defer cancel()
@@ -172,6 +195,14 @@ func requestError(ctx context.Context) error {
 	}
 	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
 		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func validateAcquire(result AcquireResult, fencing bool) error {
+	if (!result.Acquired && result.FencingToken != 0) ||
+		(result.Acquired && (result.FencingToken != 0) != fencing) {
+		return ErrInvalidAcquireResult
 	}
 	return nil
 }

@@ -8,7 +8,7 @@ import (
 	"github.com/tr1v3r/anylock"
 )
 
-// observedLease adds a release observation while promoting the other six
+// observedLease adds a release observation while promoting the other seven
 // methods unchanged. The observer must support concurrent calls if callers do.
 type observedLease struct {
 	anylock.Lease

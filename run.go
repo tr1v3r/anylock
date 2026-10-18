@@ -12,7 +12,7 @@ import (
 // invoked, executed is true and its error is returned unchanged.
 //
 // The reservation is never renewed or released, even when fn returns an error,
-// panics, or ctx is canceled. WithAutoRenew has no effect. The TTL starts at
+// panics, or ctx is canceled. WithAutoRenew and WithFencing have no effect. The TTL starts at
 // acquisition, not callback completion; fn may outlive it, allowing another
 // caller to run concurrently. This is a TTL execution gate, not a mutex or a
 // guarantee of business idempotency. Only ctx governs callback cancellation.
@@ -40,7 +40,7 @@ func (l *Locker) TryRun(
 	started := time.Now()
 	request, cancel := context.WithTimeout(ctx, l.operationTimeout)
 	defer cancel()
-	acquired, acquireErr := l.driver.TryAcquire(request, key, owner, ttl)
+	result, acquireErr := l.driver.TryAcquire(request, AcquireRequest{Key: key, Owner: owner, TTL: ttl})
 	requestErr := request.Err()
 	requestDeadline, _ := request.Deadline()
 	cancel()
@@ -57,7 +57,10 @@ func (l *Locker) TryRun(
 	if !now.Before(requestDeadline) {
 		return false, fmt.Errorf("anylock: acquire %q: %w", key, context.DeadlineExceeded)
 	}
-	if !acquired {
+	if err := validateAcquire(result, false); err != nil {
+		return false, err
+	}
+	if !result.Acquired {
 		return false, nil
 	}
 	if !now.Before(started.Add(ttl)) {

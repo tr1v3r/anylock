@@ -30,6 +30,7 @@ var (
 // Delegate to a real lease: this is not a fake lifecycle implementation.
 type externalLease struct{ delegate anylock.Lease }
 
+func (l externalLease) FencingToken() (uint64, bool)      { return l.delegate.FencingToken() }
 func (l externalLease) Key() string                       { return l.delegate.Key() }
 func (l externalLease) Context() context.Context          { return l.delegate.Context() }
 func (l externalLease) Deadline() time.Time               { return l.delegate.Deadline() }
@@ -105,7 +106,7 @@ type leaseInterfaceDriver struct {
 	release func(context.Context, string, string) (bool, error)
 }
 
-func (d leaseInterfaceDriver) TryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
+func (d leaseInterfaceDriver) tryAcquire(ctx context.Context, key, owner string, ttl time.Duration) (bool, error) {
 	return d.acquire(ctx, key, owner, ttl)
 }
 
@@ -197,7 +198,7 @@ func TestLeaseInterfaceLateSuccessReturnsNil(t *testing.T) {
 			driver := leaseInterfaceDriver{Driver: memory,
 				acquire: func(request context.Context, key, owner string, ttl time.Duration) (bool, error) {
 					attempts++
-					acquired, err := memory.TryAcquire(request, key, owner, ttl)
+					acquired, err := memory.tryAcquire(request, key, owner, ttl)
 					cancel() // The backend succeeded before cancellation was observed.
 					return acquired, err
 				},
@@ -236,4 +237,14 @@ func TestLeaseInterfaceLateSuccessReturnsNil(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (d leaseInterfaceDriver) TryAcquire(ctx context.Context, req anylock.AcquireRequest) (anylock.AcquireResult, error) {
+	key, owner := req.Key, req.Owner
+	if req.Fencing {
+		return anylock.AcquireResult{}, anylock.ErrFencingUnsupported
+	}
+	ttl := req.TTL
+	ok, err := d.tryAcquire(ctx, key, owner, ttl)
+	return anylock.AcquireResult{Acquired: ok}, err
 }
