@@ -9,6 +9,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 
+	"github.com/tr1v3r/anylock"
 	postgresdriver "github.com/tr1v3r/anylock/driver/postgres"
 )
 
@@ -87,12 +88,12 @@ func ExampleDriver_TryAcquire() {
 	// normally manages tokens and the lease lifecycle for applications.
 	owner := rand.Text()
 	mock.ExpectExec(`INSERT INTO`).WithArgs("myapp:leases:resource:123", owner, "0 hours 1 minutes 0 seconds 0 microseconds").WillReturnResult(sqlmock.NewResult(0, 1))
-	acquired, err := d.TryAcquire(ctx, "resource:123", owner, time.Minute)
-	fmt.Println("acquired:", acquired, "error:", err)
+	acquired, err := d.TryAcquire(ctx, anylock.AcquireRequest{Key: "resource:123", Owner: owner, TTL: time.Minute})
+	fmt.Println("acquired:", acquired.Acquired, "error:", err)
 	// Even the same owner cannot reacquire a live lease; use Renew instead.
 	mock.ExpectExec(`INSERT INTO`).WithArgs("myapp:leases:resource:123", owner, "0 hours 1 minutes 0 seconds 0 microseconds").WillReturnResult(sqlmock.NewResult(0, 0))
-	acquired, err = d.TryAcquire(ctx, "resource:123", owner, time.Minute)
-	fmt.Println("busy:", !acquired, "error:", err)
+	acquired, err = d.TryAcquire(ctx, anylock.AcquireRequest{Key: "resource:123", Owner: owner, TTL: time.Minute})
+	fmt.Println("busy:", !acquired.Acquired, "error:", err)
 	// Output:
 	// acquired: true error: <nil>
 	// busy: true error: <nil>

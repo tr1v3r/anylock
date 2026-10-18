@@ -72,7 +72,7 @@ func driverOperations(d *Driver) []struct {
 		sql  string
 		call func(context.Context, string, string, time.Duration) (bool, error)
 	}{
-		{"acquire", `(?i)INSERT\s+INTO`, d.TryAcquire},
+		{"acquire", `(?i)INSERT\s+INTO`, d.tryAcquire},
 		{"renew", `(?i)UPDATE\s+`, d.Renew},
 		{"release", `(?i)DELETE\s+FROM`, func(ctx context.Context, key, owner string, _ time.Duration) (bool, error) {
 			return d.Release(ctx, key, owner)

@@ -153,7 +153,7 @@ consume the operation budget; failures do not prove a write never committed.
 
 Database clock jumps, pauses, network partitions, replication/failover settings,
 and administrative writes remain part of the safety model. This adapter does not
-provide fencing, strict gate mutual exclusion, exactly-once work, or stronger
+provide strict gate mutual exclusion, exactly-once work, or stronger
 consistency/durability than the database itself. No external transaction is accepted:
 operations use the pool's own single-statement transactions, never a caller's
 long-lived `*sql.Tx`.
@@ -230,8 +230,9 @@ exported operations/options. Its SQL mock is test-only plumbing, not an in-memor
 PostgreSQL substitute. The real-server suite covers atomic ownership, database-clock
 expiry, row-lock/deadline races, and core integration. Local integration tests skip
 without a DSN; **CI supplies one and runs the bounded regressions unconditionally**
-in the existing PostgreSQL 12/16 × Go 1.24/stable matrix. No stress environment
-variable is needed for these mandatory regressions:
+in the PostgreSQL 12–18 × Go 1.24/stable matrix. PostgreSQL 12/13 remain
+legacy syntax-compatibility targets; use a maintained release in production.
+No stress environment variable is needed for these mandatory regressions:
 
 | Regression | Size and safety checks |
 | --- | --- |
@@ -338,3 +339,34 @@ seeded operation sequence all affect observations; scheduling is still nondeterm
 This is a correctness/load diagnostic, **not a production benchmark or capacity
 claim**. The repository's immutable historical experiment archive describes a
 different workload/provenance and must not be relabeled with these results.
+
+## Explicit fencing
+
+Use `anylock.New(driver, anylock.WithFencing())`, after explicitly provisioning
+`driver.EnsureFencingSchema(ctx)` (or equivalent migrations). `EnsureSchema`
+continues to create only the lease table; existing deployments need an additional
+sequence, with no lease-table column migration. The default permanent sequence is
+`public.anylock_fences`; select another with `WithFenceSequence("schema.name")`.
+All drivers participating in one lock domain must share the same sequence.
+
+```sql
+CREATE SEQUENCE public.anylock_fences AS bigint NO CYCLE CACHE 1;
+```
+
+`TryAcquire` with `AcquireRequest.Fencing` uses an UPSERT CTE and allocates `nextval` in its outer SELECT
+only after the row was acquired, while the row lock is still held. This prevents
+a blocked UPSERT from reserving an older token before its predecessor. A busy row
+returns no token; renew/release never touch the sequence. Tokens span positive
+bigint values and may have gaps. Exhaustion raises an error and rolls back the
+lease mutation.
+
+The sequence must be permanent, logged, ascending, `NO CYCLE`, and `CACHE 1`.
+Larger caches can return lower values across connections. Existing schema is
+not validated/migrated by `IF NOT EXISTS`; migrations/operators must preserve
+these invariants. Never reset/drop/recreate the sequence while a token can remain
+in downstream storage. Lease-row cleanup must never delete/reset sequence state.
+Restore/failover guarantees depend on durability and replication configuration;
+rolling back sequence history invalidates fencing.
+
+Read [the shared fencing contract](../../docs/fencing.md): business storage must
+atomically validate `Lease.FencingToken()` with protected writes.
