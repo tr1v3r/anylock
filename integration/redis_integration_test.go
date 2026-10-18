@@ -31,7 +31,7 @@ func TestIntegrationRedisLeaseLifecycle(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Second)
 		defer stop()
-		if cleanupErr := client.Del(cleanup, prefix+"resource", prefix+"auto").Err(); cleanupErr != nil {
+		if cleanupErr := client.Del(cleanup, redisLeaseKey(prefix+"resource"), redisLeaseKey(prefix+"auto")).Err(); cleanupErr != nil {
 			t.Errorf("clean own integration keys: %v", cleanupErr)
 		}
 	})
@@ -100,11 +100,11 @@ func TestIntegrationRedisLeaseLifecycle(t *testing.T) {
 		t.Fatal("automatic renewal lost remote ownership", busyErr)
 	}
 	// Fault injection in our unique namespace: replace with a successor owner.
-	if deleteErr := client.Del(ctx, prefix+"auto").Err(); deleteErr != nil {
+	if deleteErr := client.Del(ctx, redisLeaseKey(prefix+"auto")).Err(); deleteErr != nil {
 		t.Fatal(deleteErr)
 	}
-	acquired, err := backend.TryAcquire(ctx, "auto", "successor", 3*time.Second)
-	if err != nil || !acquired {
+	acquired, err := backend.TryAcquire(ctx, anylock.AcquireRequest{Key: "auto", Owner: "successor", TTL: 3 * time.Second})
+	if err != nil || !acquired.Acquired {
 		t.Fatal("failed to install successor", acquired, err)
 	}
 	select {
@@ -115,16 +115,13 @@ func TestIntegrationRedisLeaseLifecycle(t *testing.T) {
 	if !errors.Is(lease.Err(), anylock.ErrLeaseLost) || lease.Context().Err() == nil {
 		t.Fatal("lost lease/work context still live", lease.Err())
 	}
-	// The independently pinned published core reports ErrLeaseLost for this
-	// no-op; workspace core treats it as successful cleanup. The root package
-	// strictly tests the new nil result, while both modes must protect successors.
-	if staleErr := lease.Release(ctx); staleErr != nil && !errors.Is(staleErr, anylock.ErrLeaseLost) {
+	if staleErr := lease.Release(ctx); staleErr != nil {
 		t.Fatal("stale cleanup failed", staleErr)
 	}
 	if !errors.Is(lease.Err(), anylock.ErrLeaseLost) {
 		t.Fatal("cleanup reset terminal cause", lease.Err())
 	}
-	value, err := client.Get(ctx, prefix+"auto").Result()
+	value, err := client.Get(ctx, redisLeaseKey(prefix+"auto")).Result()
 	if err != nil || value != "successor" {
 		t.Fatal("stale handle changed successor", value, err)
 	}

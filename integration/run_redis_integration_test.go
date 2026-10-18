@@ -29,8 +29,8 @@ func TestIntegrationRedisRunWindows(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 	prefix := "pkg-lock-run-integration:" + rand.Text() + ":"
 	keys := []string{
-		prefix + "TryRun-success", prefix + "TryRun-failure",
-		prefix + "Run-success", prefix + "Run-failure", prefix + "auto",
+		redisLeaseKey(prefix + "TryRun-success"), redisLeaseKey(prefix + "TryRun-failure"),
+		redisLeaseKey(prefix + "Run-success"), redisLeaseKey(prefix + "Run-failure"), redisLeaseKey(prefix + "auto"),
 	}
 	// Never touch other tests' namespaces or require an empty Redis database.
 	t.Cleanup(func() {
@@ -44,7 +44,7 @@ func TestIntegrationRedisRunWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	locker, err := anylock.New(backend)
+	locker, err := anylock.New(backend, anylock.WithFencing())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,11 +77,11 @@ func TestIntegrationRedisRunWindows(t *testing.T) {
 				if !executed || runErr != outcome.err || callbacks != 1 {
 					t.Fatal("callback result changed", executed, runErr, callbacks)
 				}
-				owner, getErr := client.Get(ctx, prefix+key).Result()
+				owner, getErr := client.Get(ctx, redisLeaseKey(prefix+key)).Result()
 				if getErr != nil || owner == "" {
 					t.Fatal("callback completion removed Redis key", owner, getErr)
 				}
-				remaining, ttlErr := client.PTTL(ctx, prefix+key).Result()
+				remaining, ttlErr := client.PTTL(ctx, redisLeaseKey(prefix+key)).Result()
 				if ttlErr != nil || remaining <= 0 || remaining > ttl {
 					t.Fatal("marker has no bounded TTL", remaining, ttlErr)
 				}
@@ -104,7 +104,7 @@ func TestIntegrationRedisRunWindows(t *testing.T) {
 				if !executed || runErr != nil || callbacks != 2 {
 					t.Fatal("Run did not execute after window expiry", executed, runErr, callbacks)
 				}
-				nextOwner, nextErr := client.Get(ctx, prefix+key).Result()
+				nextOwner, nextErr := client.Get(ctx, redisLeaseKey(prefix+key)).Result()
 				if nextErr != nil || nextOwner == "" || nextOwner == owner {
 					t.Fatal("successor marker missing or owner reused", nextOwner, nextErr)
 				}
@@ -112,8 +112,8 @@ func TestIntegrationRedisRunWindows(t *testing.T) {
 		}
 	}
 
-	t.Run("auto renew does not extend execution window", func(t *testing.T) {
-		automatic, newErr := anylock.New(backend, anylock.WithAutoRenew())
+	t.Run("auto renew and fencing do not extend execution window", func(t *testing.T) {
+		automatic, newErr := anylock.New(backend, anylock.WithAutoRenew(), anylock.WithFencing())
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
@@ -132,7 +132,7 @@ func TestIntegrationRedisRunWindows(t *testing.T) {
 		if !executed || runErr != nil {
 			t.Fatal("WithAutoRenew extended fixed execution window", executed, runErr)
 		}
-		if exists, existsErr := client.Exists(ctx, prefix+"auto").Result(); existsErr != nil || exists != 1 {
+		if exists, existsErr := client.Exists(ctx, redisLeaseKey(prefix+"auto")).Result(); existsErr != nil || exists != 1 {
 			t.Fatal("successor callback removed marker", exists, existsErr)
 		}
 	})

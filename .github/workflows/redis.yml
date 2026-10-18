@@ -5,9 +5,6 @@ on:
     branches: [master]
   pull_request:
 
-env:
-  GOWORK: 'off'
-
 jobs:
   redis:
     name: Redis ${{ matrix.redis }} (Go ${{ matrix.go }})
