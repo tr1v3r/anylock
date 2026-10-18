@@ -48,7 +48,7 @@ func (m *workerMetrics) call(d *Driver, ctx context.Context, api int, key, owner
 	var err error
 	switch api {
 	case apiAcquire:
-		ok, err = d.TryAcquire(ctx, key, owner, workloadTTL)
+		ok, err = d.tryAcquire(ctx, key, owner, workloadTTL)
 	case apiRenew:
 		ok, err = d.Renew(ctx, key, owner, workloadTTL)
 	case apiRelease:
@@ -219,7 +219,7 @@ func TestBoundedSimultaneousContenders(t *testing.T) {
 					defer done.Done()
 					ready.Done()
 					<-start
-					ok, err := d.TryAcquire(ctx, "hot", strconv.Itoa(worker), workloadTTL)
+					ok, err := d.tryAcquire(ctx, "hot", strconv.Itoa(worker), workloadTTL)
 					if err != nil {
 						t.Error(err)
 					}
@@ -295,7 +295,7 @@ func TestBoundedManyCanceledGateWaiters(t *testing.T) {
 			var err error
 			switch i % apiCount {
 			case apiAcquire:
-				_, err = d.TryAcquire(operation, "other", strconv.Itoa(i), workloadTTL)
+				_, err = d.tryAcquire(operation, "other", strconv.Itoa(i), workloadTTL)
 			case apiRenew:
 				_, err = d.Renew(operation, "hot", "owner", workloadTTL)
 			case apiRelease:
@@ -372,7 +372,7 @@ func TestBoundedBatchExpirySweep(t *testing.T) {
 			for index := worker; index < keys; index += workers {
 				key := keyNames[index]
 				owner := "successor:" + strconv.Itoa(index)
-				ok, err = d.TryAcquire(ctx, key, owner, workloadTTL)
+				ok, err = d.tryAcquire(ctx, key, owner, workloadTTL)
 				if !ok || err != nil {
 					t.Error("batch successor failed", key, ok, err)
 				}
@@ -435,7 +435,7 @@ func TestBoundedControlledExpiryTurnover(t *testing.T) {
 				ready.Done()
 				<-start
 				owner := fmt.Sprintf("g%d:o%d", generation, contender)
-				ok, err := d.TryAcquire(ctx, "hot", owner, workloadTTL)
+				ok, err := d.tryAcquire(ctx, "hot", owner, workloadTTL)
 				if err != nil {
 					t.Error(err)
 				}
