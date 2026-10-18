@@ -22,7 +22,7 @@ func requireResult(t *testing.T, got bool, err error, want bool) {
 
 func acquire(t *testing.T, d *Driver, key, owner string, ttl time.Duration, want bool) {
 	t.Helper()
-	got, err := d.TryAcquire(context.Background(), key, owner, ttl)
+	got, err := d.tryAcquire(context.Background(), key, owner, ttl)
 	requireResult(t, got, err, want)
 }
 
@@ -58,7 +58,7 @@ func TestValidation(t *testing.T) {
 		name string
 		call func(*Driver, context.Context, string, string, time.Duration) (bool, error)
 	}{
-		{"acquire", (*Driver).TryAcquire},
+		{"acquire", (*Driver).tryAcquire},
 		{"renew", (*Driver).Renew},
 		{"release", func(d *Driver, ctx context.Context, key, owner string, _ time.Duration) (bool, error) {
 			return d.Release(ctx, key, owner)
@@ -129,8 +129,8 @@ func TestInvalidRequestsDoNotMutateOrSweep(t *testing.T) {
 	cancel()
 	var nilContext context.Context
 	for _, call := range []func() (bool, error){
-		func() (bool, error) { return d.TryAcquire(nilContext, "new", "b", time.Hour) },
-		func() (bool, error) { return d.TryAcquire(context.Background(), "new", "b", 0) },
+		func() (bool, error) { return d.tryAcquire(nilContext, "new", "b", time.Hour) },
+		func() (bool, error) { return d.tryAcquire(context.Background(), "new", "b", 0) },
 		func() (bool, error) { return d.Renew(context.Background(), "live", "a", -1) },
 		func() (bool, error) { return d.Release(context.Background(), "live", "") },
 		func() (bool, error) { return d.Renew(ctx, "live", "a", time.Hour) },
@@ -198,7 +198,7 @@ func TestLateCancellationReportsCommittedOutcome(t *testing.T) {
 			var err error
 			switch operation {
 			case "acquire":
-				got, err = d.TryAcquire(ctx, "k", "a", time.Hour)
+				got, err = d.tryAcquire(ctx, "k", "a", time.Hour)
 			case "renew":
 				got, err = d.Renew(ctx, "k", "a", 2*time.Hour)
 			case "release":
@@ -373,7 +373,7 @@ func TestRandomizedHeapMapInvariant(t *testing.T) {
 		key := fmt.Sprintf("k%d", random.IntN(30))
 		switch random.IntN(4) {
 		case 0:
-			_, err := d.TryAcquire(context.Background(), key, "o", time.Duration(random.IntN(100)+1)*time.Hour)
+			_, err := d.tryAcquire(context.Background(), key, "o", time.Duration(random.IntN(100)+1)*time.Hour)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -408,7 +408,7 @@ func TestConcurrentSingleWinner(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			<-start
-			got, err := d.TryAcquire(context.Background(), "k", fmt.Sprintf("o%d", i), time.Hour)
+			got, err := d.tryAcquire(context.Background(), "k", fmt.Sprintf("o%d", i), time.Hour)
 			if err != nil {
 				t.Error(err)
 			}
@@ -540,7 +540,7 @@ func TestCancellationDuringSweep(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	got, err := d.TryAcquire(&cancelDuringSweep{Context: ctx, cancel: cancel}, "new", "a", time.Hour)
+	got, err := d.tryAcquire(&cancelDuringSweep{Context: ctx, cancel: cancel}, "new", "a", time.Hour)
 	if got || !errors.Is(err, context.Canceled) {
 		t.Fatal("sweep ignored cancellation", got, err)
 	}
