@@ -26,7 +26,7 @@ func TestIntegrationRedisOwnershipAndExpiry(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cleanupCancel()
-		if err := client.Del(cleanupCtx, prefix+key).Err(); err != nil {
+		if err := client.Del(cleanupCtx, leaseKey(prefix+key)).Err(); err != nil {
 			t.Errorf("clean own integration key: %v", err)
 		}
 	})
@@ -34,9 +34,9 @@ func TestIntegrationRedisOwnershipAndExpiry(t *testing.T) {
 		t.Fatalf("connect to real Redis: %v", err)
 	}
 
-	ok, err := first.TryAcquire(ctx, key, "first", 5*time.Second)
+	ok, err := first.tryAcquire(ctx, key, "first", 5*time.Second)
 	requireResult(t, true, ok, err)
-	ok, err = second.TryAcquire(ctx, key, "second", time.Second)
+	ok, err = second.tryAcquire(ctx, key, "second", time.Second)
 	requireResult(t, false, ok, err)
 	ok, err = second.Renew(ctx, key, "second", time.Minute)
 	requireResult(t, false, ok, err)
@@ -44,31 +44,31 @@ func TestIntegrationRedisOwnershipAndExpiry(t *testing.T) {
 	requireResult(t, false, ok, err)
 	ok, err = first.Renew(ctx, key, "first", 10*time.Second)
 	requireResult(t, true, ok, err)
-	if ttl, ttlErr := client.PTTL(ctx, prefix+key).Result(); ttlErr != nil || ttl < 5*time.Second {
+	if ttl, ttlErr := client.PTTL(ctx, leaseKey(prefix+key)).Result(); ttlErr != nil || ttl < 5*time.Second {
 		t.Fatalf("real renewal PTTL = %v, %v; want at least 5s", ttl, ttlErr)
 	}
 	// Shorten via the real owner-checked script, then observe Redis's real clock.
 	ok, err = first.Renew(ctx, key, "first", 100*time.Millisecond)
 	requireResult(t, true, ok, err)
 	waitForRealExpiry(t, ctx, func() (bool, error) {
-		count, existsErr := client.Exists(ctx, prefix+key).Result()
+		count, existsErr := client.Exists(ctx, leaseKey(prefix+key)).Result()
 		return count == 0, existsErr
 	})
 	ok, err = first.Renew(ctx, key, "first", time.Second)
 	requireResult(t, false, ok, err)
 	ok, err = first.Release(ctx, key, "first")
 	requireResult(t, false, ok, err)
-	if count, existsErr := client.Exists(ctx, prefix+key).Result(); count != 0 || existsErr != nil {
+	if count, existsErr := client.Exists(ctx, leaseKey(prefix+key)).Result(); count != 0 || existsErr != nil {
 		t.Fatalf("expired key was revived: %d, %v", count, existsErr)
 	}
 
-	ok, err = second.TryAcquire(ctx, key, "second", 5*time.Second)
+	ok, err = second.tryAcquire(ctx, key, "second", 5*time.Second)
 	requireResult(t, true, ok, err)
 	ok, err = first.Renew(ctx, key, "first", time.Minute)
 	requireResult(t, false, ok, err)
 	ok, err = first.Release(ctx, key, "first")
 	requireResult(t, false, ok, err)
-	if value, getErr := client.Get(ctx, prefix+key).Result(); value != "second" || getErr != nil {
+	if value, getErr := client.Get(ctx, leaseKey(prefix+key)).Result(); value != "second" || getErr != nil {
 		t.Fatalf("successor damaged by stale owner: %q, %v", value, getErr)
 	}
 	ok, err = second.Release(ctx, key, "second")
