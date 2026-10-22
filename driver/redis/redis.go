@@ -31,7 +31,6 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-
 	"github.com/tr1v3r/anylock"
 )
 
@@ -39,6 +38,9 @@ import (
 // *redis.Client and *redis.ClusterClient implement it. Implementations must be
 // safe for concurrent use and honor supplied context deadlines, including during
 // network I/O. Cancellation need not immediately interrupt an in-flight command.
+// Custom implementations must not replay commands whose mutation may have committed.
+// New enforces that policy for known go-redis clients without changing their options;
+// custom hooks must preserve the supplied command's NoRetry policy.
 type Client interface {
 	Do(context.Context, ...any) *goredis.Cmd
 	Eval(context.Context, string, []string, ...any) *goredis.Cmd
@@ -76,22 +78,27 @@ return 0
 // Known go-redis clients must enable ContextTimeoutEnabled and must not disable
 // socket deadline updates (ReadTimeout or WriteTimeout set to -2 before client
 // construction). Client options must not be mutated after construction. Custom
-// clients must honor supplied context deadlines. An empty prefix is allowed.
+// clients must honor supplied context deadlines and avoid ambiguous mutation retries.
+// Known clients use command-local NoRetry wrappers; safe Cluster MOVED/ASK routing
+// and the shared client's other calls are unaffected. An empty prefix is allowed.
 func New(client Client, prefix string) (*Driver, error) {
 	if isNil(client) {
 		return nil, errors.New("anylock/redis: nil client")
 	}
 	var contextTimeoutEnabled bool
 	var readTimeout, writeTimeout time.Duration
+	var process func(context.Context, goredis.Cmder) error
 	switch concrete := client.(type) {
 	case *goredis.Client:
 		options := concrete.Options()
 		contextTimeoutEnabled = options.ContextTimeoutEnabled
 		readTimeout, writeTimeout = options.ReadTimeout, options.WriteTimeout
+		process = concrete.Process
 	case *goredis.ClusterClient:
 		options := concrete.Options()
 		contextTimeoutEnabled = options.ContextTimeoutEnabled
 		readTimeout, writeTimeout = options.ReadTimeout, options.WriteTimeout
+		process = concrete.Process
 	default:
 		return &Driver{client: client, prefix: prefix}, nil
 	}
@@ -103,7 +110,7 @@ func New(client Client, prefix string) (*Driver, error) {
 	if readTimeout < 0 || writeTimeout < 0 {
 		return nil, errors.New("anylock/redis: go-redis client must not disable read or write socket deadlines")
 	}
-	return &Driver{client: client, prefix: prefix}, nil
+	return &Driver{client: noRetryAdapter{process: process}, prefix: prefix}, nil
 }
 
 // TryAcquire atomically creates an absent lease. Acquired false means the key is already
