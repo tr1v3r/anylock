@@ -15,6 +15,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/alicebob/miniredis/v2/server"
 	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/tr1v3r/anylock"
 )
 
@@ -51,7 +52,7 @@ func (c *replyLossConn) Read(p []byte) (int, error) {
 		complete := c.fault.reply == "" || bytes.Contains(c.received, []byte(c.fault.reply))
 		if complete && c.fault.dropped.CompareAndSwap(false, true) {
 			c.armed.Store(false)
-			_ = c.Conn.Close()
+			_ = c.Close()
 			return 0, io.EOF
 		}
 	}
