@@ -331,12 +331,12 @@ func TestCommandsAndMaxDurationDoNotOverflow(t *testing.T) {
 			switch name := cmd.Name(); name {
 			case "set":
 				want = []any{"SET", leaseKey("prefix:key"), "owner", "NX", "PX", maxMilliseconds}
-			case "eval":
+			case evalCommand:
 				switch script := args[1]; script {
 				case renewScript:
-					want = []any{"eval", renewScript, 1, leaseKey("prefix:key"), "owner", maxMilliseconds}
+					want = []any{evalCommand, renewScript, 1, leaseKey("prefix:key"), "owner", maxMilliseconds}
 				case releaseScript:
-					want = []any{"eval", releaseScript, 1, leaseKey("prefix:key"), "owner"}
+					want = []any{evalCommand, releaseScript, 1, leaseKey("prefix:key"), "owner"}
 				default:
 					t.Errorf("unexpected script %q", script)
 				}

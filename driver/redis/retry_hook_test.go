@@ -48,7 +48,7 @@ func TestDriverPreservesProcessHooksAndErrors(t *testing.T) {
 					}
 					want := "set"
 					if fencing {
-						want = "eval"
+						want = evalCommand
 					}
 					if cmd.Name() != want {
 						t.Error("hook received unexpected command", cmd.Name())

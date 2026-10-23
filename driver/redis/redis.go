@@ -233,11 +233,15 @@ func (d *Driver) send(ctx context.Context, cmd *goredis.Cmd) *goredis.Cmd {
 	return cmd
 }
 
+// evalCommand is the lower-case command name go-redis itself dispatches for
+// Eval; sharing one constant also satisfies goconst across the package.
+const evalCommand = "eval"
+
 // eval builds an EVAL command for script and sends it through send. Setting the
 // first key position makes Cluster route on KEYS[1], matching go-redis's Eval.
 func (d *Driver) eval(ctx context.Context, script string, keys []string, args ...any) *goredis.Cmd {
 	command := make([]any, 3+len(keys), 3+len(keys)+len(args))
-	command[0], command[1], command[2] = "eval", script, len(keys)
+	command[0], command[1], command[2] = evalCommand, script, len(keys)
 	for i, key := range keys {
 		command[3+i] = key
 	}
