@@ -43,6 +43,26 @@ jobs:
       - name: Report coverage per module
         run: ./scripts/modules.sh sh -c 'go tool cover -func=coverage.out | tail -1'
 
+  security:
+    name: Vulnerabilities (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ['.', 'driver/memory', 'driver/postgres', 'driver/redis', 'integration']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # stable keeps the stdlib baseline current: a red run after a Go
+          # advisory usually means bumping the build toolchain, not go.mod.
+          go-version: stable
+          cache-dependency-path: '**/go.sum'
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - run: govulncheck -test ./...
+        working-directory: ${{ matrix.module }}
+
   standalone:
     name: Standalone modules
     runs-on: ubuntu-latest
