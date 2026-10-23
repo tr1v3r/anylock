@@ -67,7 +67,14 @@ func (f *replyLoss) dial(ctx context.Context, network, addr string) (net.Conn, e
 	return &replyLossConn{Conn: conn, fault: f}, nil
 }
 
-func retryClient(t *testing.T, kind, addr string, fault *replyLoss) Client {
+// Both fixture clients keep Do for the shared-retry test below; the driver
+// itself dispatches through the Client interface only.
+type retryFixtureClient interface {
+	Client
+	Do(ctx context.Context, args ...any) *goredis.Cmd
+}
+
+func retryClient(t *testing.T, kind, addr string, fault *replyLoss) retryFixtureClient {
 	t.Helper()
 	if kind == "single" {
 		client := goredis.NewClient(&goredis.Options{

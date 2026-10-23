@@ -18,31 +18,27 @@ import (
 var testContext = context.Background()
 
 type stubClient struct {
-	do   func(context.Context, ...any) *goredis.Cmd
-	eval func(context.Context, string, []string, ...any) *goredis.Cmd
+	process func(context.Context, goredis.Cmder) error
 }
 
-func (c *stubClient) Do(ctx context.Context, args ...any) *goredis.Cmd {
-	return c.do(ctx, args...)
-}
-
-func (c *stubClient) Eval(ctx context.Context, script string, keys []string, args ...any) *goredis.Cmd {
-	return c.eval(ctx, script, keys, args...)
+func (c *stubClient) Process(ctx context.Context, cmd goredis.Cmder) error {
+	return c.process(ctx, cmd)
 }
 
 // A nil map implementing Client exercises nil kinds other than pointers.
 type mapClient map[string]string
 
-func (mapClient) Do(context.Context, ...any) *goredis.Cmd { panic("nil client called") }
-func (mapClient) Eval(context.Context, string, []string, ...any) *goredis.Cmd {
-	panic("nil client called")
-}
+func (mapClient) Process(context.Context, goredis.Cmder) error { panic("nil client called") }
 
-func resultCommand(value any, err error) *goredis.Cmd {
-	cmd := goredis.NewCmd(testContext)
-	cmd.SetVal(value)
-	cmd.SetErr(err)
-	return cmd
+// replyProcess stores a prepared outcome on the driver-built command, mirroring
+// how real clients record results. The concrete wrapper is required because
+// Cmder does not expose SetVal.
+func replyProcess(value any, err error) func(context.Context, goredis.Cmder) error {
+	return func(_ context.Context, cmd goredis.Cmder) error {
+		cmd.(noRetryCmd).SetVal(value)
+		cmd.SetErr(err)
+		return err
+	}
 }
 
 func newDriver(t *testing.T, addr, prefix string) (*Driver, *goredis.Client) {
@@ -142,13 +138,14 @@ func TestOperationsAddDeadlineWhenAbsent(t *testing.T) {
 		}
 	}
 	driver, err := New(&stubClient{
-		do: func(got context.Context, _ ...any) *goredis.Cmd {
+		process: func(got context.Context, cmd goredis.Cmder) error {
 			checkContext(got)
-			return resultCommand("OK", nil)
-		},
-		eval: func(got context.Context, _ string, _ []string, _ ...any) *goredis.Cmd {
-			checkContext(got)
-			return resultCommand(int64(1), nil)
+			value := any(int64(1))
+			if cmd.Name() == "set" {
+				value = "OK"
+			}
+			cmd.(noRetryCmd).SetVal(value)
+			return nil
 		},
 	}, "")
 	if err != nil {
@@ -325,25 +322,36 @@ func TestCommandsAndMaxDurationDoNotOverflow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(valueContext, 5*time.Second)
 	defer cancel()
 	client := &stubClient{
-		do: func(gotContext context.Context, args ...any) *goredis.Cmd {
-			want := []any{"SET", leaseKey("prefix:key"), "owner", "NX", "PX", maxMilliseconds}
-			if gotContext != ctx || !reflect.DeepEqual(args, want) {
-				t.Errorf("Do context/args = %v / %#v; want original context / %#v", gotContext, args, want)
+		process: func(gotContext context.Context, cmd goredis.Cmder) error {
+			if gotContext != ctx {
+				t.Errorf("%s lost the caller context", cmd.Name())
 			}
-			return resultCommand("OK", nil)
-		},
-		eval: func(gotContext context.Context, script string, keys []string, args ...any) *goredis.Cmd {
-			if gotContext != ctx || !reflect.DeepEqual(keys, []string{leaseKey("prefix:key")}) {
-				t.Errorf("Eval context/keys = %v / %#v", gotContext, keys)
-			}
-			if script == renewScript {
-				if !reflect.DeepEqual(args, []any{"owner", maxMilliseconds}) {
-					t.Errorf("renew args = %#v", args)
+			args := cmd.Args()
+			var want []any
+			switch name := cmd.Name(); name {
+			case "set":
+				want = []any{"SET", leaseKey("prefix:key"), "owner", "NX", "PX", maxMilliseconds}
+			case "eval":
+				switch script := args[1]; script {
+				case renewScript:
+					want = []any{"eval", renewScript, 1, leaseKey("prefix:key"), "owner", maxMilliseconds}
+				case releaseScript:
+					want = []any{"eval", releaseScript, 1, leaseKey("prefix:key"), "owner"}
+				default:
+					t.Errorf("unexpected script %q", script)
 				}
-			} else if script != releaseScript || !reflect.DeepEqual(args, []any{"owner"}) {
-				t.Errorf("unexpected script/args = %q / %#v", script, args)
+			default:
+				t.Errorf("unexpected command %q", name)
 			}
-			return resultCommand(int64(1), nil)
+			if want != nil && !reflect.DeepEqual(args, want) {
+				t.Errorf("%s args = %#v; want %#v", cmd.Name(), args, want)
+			}
+			if cmd.Name() == "set" {
+				cmd.(noRetryCmd).SetVal("OK")
+			} else {
+				cmd.(noRetryCmd).SetVal(int64(1))
+			}
+			return nil
 		},
 	}
 	driver, err := New(client, "prefix:")
@@ -421,36 +429,25 @@ func TestInputValidation(t *testing.T) {
 func TestMalformedRepliesAndBackendErrors(t *testing.T) {
 	backendErr := errors.New("backend failed")
 	for _, tc := range []struct {
-		name       string
-		value      any
-		err        error
-		nilCommand bool
+		name  string
+		value any
+		err   error
 	}{
-		{"nil command", nil, nil, true},
-		{"nil value", nil, nil, false},
-		{"empty string", "", nil, false},
-		{"lowercase ok", "ok", nil, false},
-		{"bytes", []byte("OK"), nil, false},
-		{"integer two", int64(2), nil, false},
-		{"negative integer", int64(-1), nil, false},
-		{"native int", int(1), nil, false},
-		{"float", float64(1), nil, false},
-		{"boolean", true, nil, false},
-		{"array", []any{int64(1)}, nil, false},
-		{"backend error", nil, backendErr, false},
-		{"redis nil", nil, goredis.Nil, false},
+		{"nil value", nil, nil},
+		{"empty string", "", nil},
+		{"lowercase ok", "ok", nil},
+		{"bytes", []byte("OK"), nil},
+		{"integer two", int64(2), nil},
+		{"negative integer", int64(-1), nil},
+		{"native int", int(1), nil},
+		{"float", float64(1), nil},
+		{"boolean", true, nil},
+		{"array", []any{int64(1)}, nil},
+		{"backend error", nil, backendErr},
+		{"redis nil", nil, goredis.Nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			command := func() *goredis.Cmd {
-				if tc.nilCommand {
-					return nil
-				}
-				return resultCommand(tc.value, tc.err)
-			}
-			driver, err := New(&stubClient{
-				do:   func(context.Context, ...any) *goredis.Cmd { return command() },
-				eval: func(context.Context, string, []string, ...any) *goredis.Cmd { return command() },
-			}, "")
+			driver, err := New(&stubClient{process: replyProcess(tc.value, tc.err)}, "")
 			if err != nil {
 				t.Fatal(err)
 			}

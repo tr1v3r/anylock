@@ -33,11 +33,12 @@ leave an owner/TTL marker (and an advanced fencing counter) without returning a
 lease. Do not infer successful ownership from that uncertainty or blindly replay
 an acquisition with the same owner.
 
-Custom `Client` implementations must likewise avoid replaying commands whose
-mutation may have committed. The driver cannot enforce that policy through the
-minimal `Do`/`Eval` interface. Custom go-redis hooks still run and receive a
-`Cmder` wrapper; they must preserve its `NoRetry` policy rather than reconstruct
-an ordinary command or implement their own unsafe retries.
+Custom `Client` implementations dispatch the driver's `NoRetry`-marked commands
+through the minimal `Process` interface and must not replay a command whose
+mutation may have committed; the minimal interface cannot enforce that policy.
+Custom go-redis hooks still run and receive the marked command; they must
+preserve its `NoRetry` policy rather than reconstruct an ordinary command or
+implement their own unsafe retries.
 
 From this directory:
 
