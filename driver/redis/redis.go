@@ -44,22 +44,29 @@ import (
 // have committed: the driver sends its lease commands marked NoRetry, and
 // custom implementations and hooks must keep that marking in effect.
 type Client interface {
+	// Process dispatches cmd once and stores its reply/error on cmd, honoring its deadline and NoRetry mark.
 	Process(ctx context.Context, cmd goredis.Cmder) error
 }
 
 // Driver implements atomic Redis lease operations. Construct it with New;
 // its zero value is not usable. Driver is safe for concurrent use when Client is.
 type Driver struct {
+	// client is the caller-owned command transport.
 	client Client
+	// prefix is prepended verbatim before physical-key encoding.
 	prefix string
 }
 
 var (
+	// Verify Driver implements the backend contract.
 	_ anylock.Driver = (*Driver)(nil)
-	_ Client         = (*goredis.Client)(nil)
-	_ Client         = (*goredis.ClusterClient)(nil)
+	// Verify the standalone go-redis client supports command dispatch.
+	_ Client = (*goredis.Client)(nil)
+	// Verify the Cluster go-redis client supports command dispatch.
+	_ Client = (*goredis.ClusterClient)(nil)
 )
 
+// renewScript refreshes expiry only for the matching, still-present owner.
 const renewScript = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
     return redis.call('PEXPIRE', KEYS[1], ARGV[2])
@@ -67,6 +74,7 @@ end
 return 0
 `
 
+// releaseScript deletes only the matching owner and cannot remove a successor.
 const releaseScript = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
     return redis.call('DEL', KEYS[1])
@@ -113,6 +121,8 @@ func New(client Client, prefix string) (*Driver, error) {
 
 // TryAcquire atomically creates an absent lease. Acquired false means the key is already
 // held, even when owner matches; acquisition is not a renewal operation.
+// Fencing uses an atomic script and a persistent per-key counter. Errors may
+// follow a committed mutation; never authorize protected work from an errored result.
 func (d *Driver) TryAcquire(
 	ctx context.Context, req anylock.AcquireRequest,
 ) (anylock.AcquireResult, error) {
@@ -171,6 +181,7 @@ func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 	return scriptResult(d.eval(ctx, releaseScript, []string{leaseKey(d.prefix + key)}, owner), "release")
 }
 
+// validate rejects unusable receivers and invalid input before dispatch.
 func (d *Driver) validate(ctx context.Context, key, owner string) error {
 	if d == nil || isNil(d.client) {
 		return errors.New("anylock/redis: nil driver or client")
@@ -187,6 +198,7 @@ func (d *Driver) validate(ctx context.Context, key, owner string) error {
 	return nil
 }
 
+// operationContext preserves supplied deadlines or supplies a one-second bound.
 func operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
@@ -194,6 +206,7 @@ func operationContext(ctx context.Context) (context.Context, context.CancelFunc)
 	return context.WithTimeout(ctx, time.Second)
 }
 
+// ttlMilliseconds rounds a positive TTL upward without overflowing the duration.
 func ttlMilliseconds(ttl time.Duration) (int64, error) {
 	if ttl <= 0 {
 		return 0, errors.New("anylock/redis: TTL must be positive")
@@ -206,6 +219,7 @@ func ttlMilliseconds(ttl time.Duration) (int64, error) {
 	return milliseconds, nil
 }
 
+// scriptResult accepts only a boolean integer reply and preserves transport errors.
 func scriptResult(cmd *goredis.Cmd, operation string) (bool, error) {
 	result, err := cmd.Result()
 	if err != nil {
@@ -221,8 +235,12 @@ func scriptResult(cmd *goredis.Cmd, operation string) (bool, error) {
 // once a mutation may have committed, an unknown outcome must surface as an
 // error instead of a second attempt. Unrelated commands on the shared client
 // keep their configured retry policy.
-type noRetryCmd struct{ *goredis.Cmd }
+type noRetryCmd struct {
+	// Cmd carries the original arguments, routing hints and response storage.
+	*goredis.Cmd
+}
 
+// NoRetry disables replay of this command after a potentially committed mutation.
 func (noRetryCmd) NoRetry() bool { return true }
 
 // send dispatches cmd through the client with replay disabled for this command
@@ -253,6 +271,7 @@ func (d *Driver) eval(ctx context.Context, script string, keys []string, args ..
 	return d.send(ctx, cmd)
 }
 
+// isNil detects nil interfaces and typed nil client values.
 func isNil(value any) bool {
 	if value == nil {
 		return true
@@ -265,15 +284,20 @@ func isNil(value any) bool {
 	}
 }
 
-// Both kinds of acquisition, renewal and release use these exact physical keys.
+// leaseKey returns the physical lease key used by acquisition, renewal and release.
 // A hex tag cannot contain braces, even if prefix/key do. Separate suffixes make
 // lease/counter namespaces disjoint for every valid logical key.
-func leaseKey(namespaced string) string   { return keyTag(namespaced) + ":lease" }
+func leaseKey(namespaced string) string { return keyTag(namespaced) + ":lease" }
+
+// counterKey returns the persistent fencing counter key in the lease hash slot.
 func counterKey(namespaced string) string { return keyTag(namespaced) + ":fence" }
+
+// keyTag encodes arbitrary logical key bytes into a brace-safe Redis Cluster hash tag.
 func keyTag(namespaced string) string {
 	return "{anylock:" + hex.EncodeToString([]byte(namespaced)) + "}"
 }
 
+// acquireFencedScript allocates a token and ownership in one Redis script.
 // INCR's Lua numeric reply loses precision above 2^53. Fetch the exact decimal
 // string with GET instead. INCR exhaustion/errors happen before installing a lease.
 const acquireFencedScript = `

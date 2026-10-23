@@ -10,32 +10,46 @@ import (
 )
 
 var (
-	ErrFencingUnsupported   = errors.New("anylock: driver does not support fencing")
+	// ErrFencingUnsupported means the requested driver cannot grant fenced ownership.
+	ErrFencingUnsupported = errors.New("anylock: driver does not support fencing")
+	// ErrInvalidAcquireResult means a driver returned an inconsistent acquisition/token pair.
 	ErrInvalidAcquireResult = errors.New("anylock: invalid driver acquisition result")
-	ErrNotAcquired          = errors.New("anylock: lease not acquired")
-	ErrLeaseLost            = errors.New("anylock: lease lost")
-	ErrClosed               = errors.New("anylock: lease handle closed")
-	ErrInvalidTTL           = errors.New("anylock: TTL must be positive")
-	ErrInvalidKey           = errors.New("anylock: key must not be empty")
-	ErrNilFunc              = errors.New("anylock: callback must not be nil")
+	// ErrNotAcquired is returned directly by TryLock for contention; only this plain sentinel is retried.
+	ErrNotAcquired = errors.New("anylock: lease not acquired")
+	// ErrLeaseLost signals expired, failed, or no longer locally valid ownership; errors may be joined.
+	ErrLeaseLost = errors.New("anylock: lease lost")
+	// ErrClosed marks local invalidation by Release; it does not prove remote deletion.
+	ErrClosed = errors.New("anylock: lease handle closed")
+	// ErrInvalidTTL rejects a nonpositive acquisition TTL before contacting the driver.
+	ErrInvalidTTL = errors.New("anylock: TTL must be positive")
+	// ErrInvalidKey rejects an empty logical key before contacting the driver.
+	ErrInvalidKey = errors.New("anylock: key must not be empty")
+	// ErrNilFunc rejects a nil TryRun/Run callback before reserving a key.
+	ErrNilFunc = errors.New("anylock: callback must not be nil")
 )
 
 // Locker coordinates fixed-TTL execution gates and lease handles over a Driver.
 // It is safe for concurrent use and owns neither connections nor background
-// goroutines. Use New to construct it.
+// goroutines. Use New to construct it; the zero value is not usable.
+// Operations require non-nil contexts. Returned leases own their lifecycle workers.
 type Locker struct {
-	driver           Driver
-	retryInterval    time.Duration
+	// driver supplies atomic backend operations and remains caller-owned.
+	driver Driver
+	// retryInterval delays only contended Lock/Run attempts.
+	retryInterval time.Duration
+	// operationTimeout caps each driver request, subject to earlier context/lease deadlines.
 	operationTimeout time.Duration
-	autoRenew        bool
-	fencing          bool
+	// autoRenew starts renewal workers for returned leases only.
+	autoRenew bool
+	// fencing requests tokens for Lock/TryLock without changing execution gates.
+	fencing bool
 }
 
 // Option configures a Locker before it is shared with other goroutines.
 type Option func(*Locker) error
 
 // WithRetryInterval sets the delay between contended Run/Lock attempts (default 50ms).
-// Backend errors are returned immediately, not retried as contention.
+// The interval must be positive. Backend errors are returned immediately, not retried as contention.
 func WithRetryInterval(interval time.Duration) Option {
 	return func(l *Locker) error {
 		if interval <= 0 {
@@ -47,8 +61,9 @@ func WithRetryInterval(interval time.Duration) Option {
 }
 
 // WithOperationTimeout bounds each driver request (default 1s). An earlier caller
-// deadline or remaining lease validity wins. Cancellation signals local loss
-// promptly, but an in-flight transport may drain until this operation deadline.
+// deadline or remaining lease validity wins. The timeout must be positive.
+// Cancellation signals local loss promptly, but an in-flight transport may drain
+// until this operation deadline.
 func WithOperationTimeout(timeout time.Duration) Option {
 	return func(l *Locker) error {
 		if timeout <= 0 {
@@ -99,6 +114,7 @@ func New(driver Driver, options ...Option) (*Locker, error) {
 	return l, nil
 }
 
+// nilValue detects a typed nil in an already non-nil interface.
 func nilValue(value any) bool {
 	v := reflect.ValueOf(value)
 	switch v.Kind() {
@@ -201,6 +217,7 @@ func requestError(ctx context.Context) error {
 	return nil
 }
 
+// validateAcquire rejects tokens inconsistent with contention or the requested fencing mode.
 func validateAcquire(result AcquireResult, fencing bool) error {
 	if (!result.Acquired && result.FencingToken != 0) ||
 		(result.Acquired && (result.FencingToken != 0) != fencing) {
