@@ -36,12 +36,15 @@ import (
 )
 
 // Client is the minimal Redis command surface used by Driver. Both
-// *redis.Client and *redis.ClusterClient implement it. Implementations must be
-// safe for concurrent use and honor supplied context deadlines, including during
-// network I/O. Cancellation need not immediately interrupt an in-flight command.
+// *redis.Client and *redis.ClusterClient implement it. Process must dispatch
+// the supplied command, record its outcome — value and error — on it, and
+// honor the supplied context deadline during network I/O; cancellation need
+// not immediately interrupt an in-flight command. Implementations must be
+// safe for concurrent use and must not replay a command whose mutation may
+// have committed: the driver sends its lease commands marked NoRetry, and
+// custom implementations and hooks must keep that marking in effect.
 type Client interface {
-	Do(context.Context, ...any) *goredis.Cmd
-	Eval(context.Context, string, []string, ...any) *goredis.Cmd
+	Process(ctx context.Context, cmd goredis.Cmder) error
 }
 
 // Driver implements atomic Redis lease operations. Construct it with New;
@@ -75,8 +78,10 @@ return 0
 // A nil client, including an interface containing a typed nil, is rejected.
 // Known go-redis clients must enable ContextTimeoutEnabled and must not disable
 // socket deadline updates (ReadTimeout or WriteTimeout set to -2 before client
-// construction). Client options must not be mutated after construction. Custom
-// clients must honor supplied context deadlines. An empty prefix is allowed.
+// construction). Client options must not be mutated after construction. The
+// driver marks its own lease commands NoRetry when dispatching them through the
+// client; shared options, hooks, unrelated calls and safe Cluster MOVED/ASK
+// routing are unaffected. An empty prefix is allowed.
 func New(client Client, prefix string) (*Driver, error) {
 	if isNil(client) {
 		return nil, errors.New("anylock/redis: nil client")
@@ -124,10 +129,7 @@ func (d *Driver) TryAcquire(
 	if req.Fencing {
 		return d.acquireFenced(ctx, key, owner, milliseconds)
 	}
-	cmd := d.client.Do(ctx, "SET", leaseKey(d.prefix+key), owner, "NX", "PX", milliseconds)
-	if cmd == nil {
-		return anylock.AcquireResult{}, errors.New("anylock/redis: acquire: nil command")
-	}
+	cmd := d.send(ctx, goredis.NewCmd(ctx, "SET", leaseKey(d.prefix+key), owner, "NX", "PX", milliseconds))
 	result, err := cmd.Result()
 	if errors.Is(err, goredis.Nil) {
 		return anylock.AcquireResult{}, nil
@@ -153,7 +155,7 @@ func (d *Driver) Renew(ctx context.Context, key, owner string, ttl time.Duration
 	if err != nil {
 		return false, err
 	}
-	return scriptResult(d.client.Eval(ctx, renewScript, []string{leaseKey(d.prefix + key)}, owner, milliseconds), "renew")
+	return scriptResult(d.eval(ctx, renewScript, []string{leaseKey(d.prefix + key)}, owner, milliseconds), "renew")
 }
 
 // Release atomically deletes a stored key only when its owner matches. Redis
@@ -166,7 +168,7 @@ func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 	}
 	ctx, cancel := operationContext(ctx)
 	defer cancel()
-	return scriptResult(d.client.Eval(ctx, releaseScript, []string{leaseKey(d.prefix + key)}, owner), "release")
+	return scriptResult(d.eval(ctx, releaseScript, []string{leaseKey(d.prefix + key)}, owner), "release")
 }
 
 func (d *Driver) validate(ctx context.Context, key, owner string) error {
@@ -205,9 +207,6 @@ func ttlMilliseconds(ttl time.Duration) (int64, error) {
 }
 
 func scriptResult(cmd *goredis.Cmd, operation string) (bool, error) {
-	if cmd == nil {
-		return false, fmt.Errorf("anylock/redis: %s: nil command", operation)
-	}
 	result, err := cmd.Result()
 	if err != nil {
 		return false, fmt.Errorf("anylock/redis: %s: %w", operation, err)
@@ -216,6 +215,42 @@ func scriptResult(cmd *goredis.Cmd, operation string) (bool, error) {
 		return value == 1, nil
 	}
 	return false, fmt.Errorf("anylock/redis: %s: unexpected reply %T (%v)", operation, result, result)
+}
+
+// noRetryCmd marks this driver's lease commands so go-redis never replays them:
+// once a mutation may have committed, an unknown outcome must surface as an
+// error instead of a second attempt. Unrelated commands on the shared client
+// keep their configured retry policy.
+type noRetryCmd struct{ *goredis.Cmd }
+
+func (noRetryCmd) NoRetry() bool { return true }
+
+// send dispatches cmd through the client with replay disabled for this command
+// only. Like the known clients' own Do, the outcome — including hook errors —
+// is recorded on cmd for the caller to inspect.
+func (d *Driver) send(ctx context.Context, cmd *goredis.Cmd) *goredis.Cmd {
+	_ = d.client.Process(ctx, noRetryCmd{cmd})
+	return cmd
+}
+
+// evalCommand is the lower-case command name go-redis itself dispatches for
+// Eval; sharing one constant also satisfies goconst across the package.
+const evalCommand = "eval"
+
+// eval builds an EVAL command for script and sends it through send. Setting the
+// first key position makes Cluster route on KEYS[1], matching go-redis's Eval.
+func (d *Driver) eval(ctx context.Context, script string, keys []string, args ...any) *goredis.Cmd {
+	command := make([]any, 3+len(keys), 3+len(keys)+len(args))
+	command[0], command[1], command[2] = evalCommand, script, len(keys)
+	for i, key := range keys {
+		command[3+i] = key
+	}
+	command = append(command, args...)
+	cmd := goredis.NewCmd(ctx, command...)
+	if len(keys) > 0 {
+		cmd.SetFirstKeyPos(3)
+	}
+	return d.send(ctx, cmd)
 }
 
 func isNil(value any) bool {
@@ -256,10 +291,7 @@ func (d *Driver) acquireFenced(
 	ctx context.Context, key, owner string, milliseconds int64,
 ) (anylock.AcquireResult, error) {
 	physical := leaseKey(d.prefix + key)
-	cmd := d.client.Eval(ctx, acquireFencedScript, []string{physical, counterKey(d.prefix + key)}, owner, milliseconds)
-	if cmd == nil {
-		return anylock.AcquireResult{}, errors.New("anylock/redis: fenced acquire: nil command")
-	}
+	cmd := d.eval(ctx, acquireFencedScript, []string{physical, counterKey(d.prefix + key)}, owner, milliseconds)
 	value, err := cmd.Result()
 	if errors.Is(err, goredis.Nil) {
 		return anylock.AcquireResult{}, nil

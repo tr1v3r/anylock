@@ -71,6 +71,12 @@ client := goredis.NewClient(&goredis.Options{
 defer client.Close() // application-owned; normally closed at shutdown
 ```
 
+The driver disables ambiguous transport retries for its own commands on known
+go-redis clients, without changing the shared client's options or other calls.
+Cluster `MOVED`/`ASK` routing remains enabled. Lost replies remain errors even if
+the mutation committed. Custom clients/hooks must preserve this no-replay policy;
+see the [Redis driver guide](driver/redis/README.md#retries-and-uncertain-outcomes).
+
 Pass it to the driver; reserve a prefix shared by every cooperating process:
 
 ```go

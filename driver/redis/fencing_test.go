@@ -86,7 +86,6 @@ func TestFencedReplyErrors(t *testing.T) {
 		err     error
 		wantErr bool
 	}{
-		{name: "nil command", wantErr: true},
 		{name: "contention", err: goredis.Nil},
 		{name: "network error", err: failure, wantErr: true},
 		{name: "integer reply", value: int64(1), wantErr: true},
@@ -95,12 +94,7 @@ func TestFencedReplyErrors(t *testing.T) {
 		{name: "overflow", value: "9223372036854775808", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			d, err := New(&stubClient{eval: func(context.Context, string, []string, ...any) *goredis.Cmd {
-				if tc.name == "nil command" {
-					return nil
-				}
-				return resultCommand(tc.value, tc.err)
-			}}, "")
+			d, err := New(&stubClient{process: replyProcess(tc.value, tc.err)}, "")
 			if err != nil {
 				t.Fatal(err)
 			}

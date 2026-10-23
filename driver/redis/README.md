@@ -19,6 +19,27 @@ missing/successor-owned key as successful, idempotent cleanup. Backend/context
 errors still need handling; cleanup never revives a closed handle or deletes a
 successor's key. `Renew` continues to require a live matching owner.
 
+## Retries and uncertain outcomes
+
+For known go-redis `*Client` and `*ClusterClient` values, the driver marks its own
+commands `NoRetry`: a lost reply must remain an error, not be hidden by replaying
+an already committed mutation. This covers ordinary/fenced acquisition, renewal,
+and release, including Cluster's outer network-retry loop and ASK pipelines.
+Safe `MOVED`/`ASK` routing remains enabled. The caller's options, hooks, and retry
+policy for unrelated client calls are unchanged; no dedicated client is required.
+
+An error does **not** prove rollback. For example, a lost acquisition reply may
+leave an owner/TTL marker (and an advanced fencing counter) without returning a
+lease. Do not infer successful ownership from that uncertainty or blindly replay
+an acquisition with the same owner.
+
+Custom `Client` implementations dispatch the driver's `NoRetry`-marked commands
+through the minimal `Process` interface and must not replay a command whose
+mutation may have committed; the minimal interface cannot enforce that policy.
+Custom go-redis hooks still run and receive the marked command; they must
+preserve its `NoRetry` policy rather than reconstruct an ordinary command or
+implement their own unsafe retries.
+
 From this directory:
 
 ```sh

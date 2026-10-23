@@ -175,7 +175,9 @@ func (l *Locker) Lock(ctx context.Context, key string, ttl time.Duration) (Lease
 	defer timer.Stop()
 	for {
 		lease, err := l.TryLock(ctx, key, ttl)
-		if !errors.Is(err, ErrNotAcquired) {
+		// Only TryLock's plain sentinel means contention; wrapped/joined errors
+		// may include it while reporting a backend or cleanup failure.
+		if err != ErrNotAcquired {
 			return lease, err
 		}
 		timer.Reset(l.retryInterval)
