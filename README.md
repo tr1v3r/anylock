@@ -12,6 +12,16 @@ go get github.com/tr1v3r/anylock/driver/redis
 # Or: /driver/postgres, /driver/memory
 ```
 
+## Fully commented SDK for agents
+
+Anylock is a **fully commented SDK** intended to help coding agents use it correctly.
+Source comments cover packages, types, interfaces, functions, methods, fields,
+constants and variables, explaining input constraints, concurrency and lifecycle
+rules, and error handling. Read the comments for your pinned version alongside
+the examples when integrating the SDK.
+
+Start with the [Locker API](lock.go), [lease lifecycle](lease.go), and [driver contract](driver.go).
+
 ## Choose the behavior
 
 | API | Purpose | After work finishes | Renewal |

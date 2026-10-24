@@ -33,37 +33,56 @@ import (
 // but must not be copied. Construct it with New; its zero value is not usable.
 // Driver owns no worker or external resource and does not need to be closed.
 type Driver struct {
-	gate    chan struct{}
-	epoch   time.Time
+	// gate serializes store access while allowing context-aware waits.
+	gate chan struct{}
+	// epoch anchors nanosecond expiry ticks to the process monotonic clock.
+	epoch time.Time
+	// entries indexes stored ownership by logical key; gate protects it.
 	entries map[string]*entry
-	expiry  expiryHeap
-	fence   uint64
+	// expiry orders the same entries by expiry for opportunistic reclamation.
+	expiry expiryHeap
+	// fence is the instance-wide counter; gate protects it and exhaustion must not wrap.
+	fence uint64
 }
 
+// Verify the memory backend implements the shared driver contract.
 var _ anylock.Driver = (*Driver)(nil)
 
+// entry links one ownership record to both the key map and expiry heap.
 type entry struct {
-	key     string
-	owner   string
+	// key indexes this entry in the owning Driver.
+	key string
+	// owner is the acquisition token checked by renewal and release.
+	owner string
+	// expires is the exclusive deadline in nanoseconds since Driver.epoch.
 	expires uint64
-	index   int
+	// index is the expiry heap position, or -1 after removal.
+	index int
 }
 
+// expiryHeap is a min-heap of ownership records ordered by monotonic expiry ticks.
 type expiryHeap []*entry
 
-func (h expiryHeap) Len() int           { return len(h) }
+// Len reports the number of records in the heap.
+func (h expiryHeap) Len() int { return len(h) }
+
+// Less places earlier expiry before later expiry.
 func (h expiryHeap) Less(i, j int) bool { return h[i].expires < h[j].expires }
+
+// Swap exchanges heap entries and updates their removal indexes.
 func (h expiryHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 	h[i].index, h[j].index = i, j
 }
 
+// Push appends a record for container/heap and records its index.
 func (h *expiryHeap) Push(value any) {
 	e := value.(*entry)
 	e.index = len(*h)
 	*h = append(*h, e)
 }
 
+// Pop removes the last heap entry and clears its reference and index.
 func (h *expiryHeap) Pop() any {
 	last := len(*h) - 1
 	e := (*h)[last]
@@ -172,6 +191,7 @@ func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 	return result(ctx, true)
 }
 
+// validate rejects uninitialized drivers and invalid input before waiting for the gate.
 func (d *Driver) validate(ctx context.Context, key, owner string) error {
 	if d == nil || d.gate == nil {
 		return errors.New("anylock/memory: nil or uninitialized driver; use New")
@@ -202,6 +222,7 @@ func (d *Driver) begin(ctx context.Context) (uint64, error) {
 	return d.ticks(), nil
 }
 
+// enter acquires the store gate unless cancellation or the actual context deadline wins.
 func (d *Driver) enter(ctx context.Context) error {
 	// Avoid a timer allocation when the gate is immediately available.
 	select {
@@ -225,6 +246,7 @@ func (d *Driver) enter(ctx context.Context) error {
 	}
 }
 
+// entered rechecks the request after acquiring the gate and releases it on failure.
 func (d *Driver) entered(ctx context.Context) error {
 	if err := requestError(ctx); err != nil {
 		d.leave()
@@ -233,6 +255,7 @@ func (d *Driver) entered(ctx context.Context) error {
 	return nil
 }
 
+// leave releases the store gate held by the current operation.
 func (d *Driver) leave() { <-d.gate }
 
 // result is called while the gate is still held, after either a lookup or a
@@ -245,6 +268,7 @@ func result(ctx context.Context, ok bool) (bool, error) {
 	return ok, nil
 }
 
+// requestError checks both recorded cancellation and the actual deadline clock.
 func requestError(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -256,6 +280,7 @@ func requestError(ctx context.Context) error {
 	return nil
 }
 
+// ticks returns monotonic nanoseconds since this store was created.
 func (d *Driver) ticks() uint64 {
 	// time.Since uses epoch's monotonic reading. A positive duration and elapsed
 	// time are each at most MaxInt64, so adding their uint64 values cannot wrap.
@@ -265,6 +290,7 @@ func (d *Driver) ticks() uint64 {
 	return uint64(time.Since(d.epoch))
 }
 
+// sweep removes expired entries while honoring ctx; the store gate must be held.
 func (d *Driver) sweep(ctx context.Context) error {
 	for len(d.expiry) > 0 {
 		if err := requestError(ctx); err != nil {
@@ -278,6 +304,7 @@ func (d *Driver) sweep(ctx context.Context) error {
 	return nil
 }
 
+// remove deletes an entry from both indexes; the store gate must be held.
 func (d *Driver) remove(e *entry) {
 	heap.Remove(&d.expiry, e.index)
 	delete(d.entries, e.key)

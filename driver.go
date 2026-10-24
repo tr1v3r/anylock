@@ -38,8 +38,11 @@ import (
 // Driver implementations own their connection resources; Locker never closes them.
 // TryRun and Run use only TryAcquire; they never renew or release reservations.
 type Driver interface {
+	// TryAcquire atomically creates absent/expired ownership; contention is a zero result with nil error.
 	TryAcquire(ctx context.Context, req AcquireRequest) (AcquireResult, error)
+	// Renew resets a matching live owner's TTL; false with nil error means ownership is absent or lost.
 	Renew(ctx context.Context, key, owner string, ttl time.Duration) (bool, error)
+	// Release deletes only matching ownership; false with nil error means no matching record remains.
 	Release(ctx context.Context, key, owner string) (bool, error)
 }
 
@@ -50,9 +53,13 @@ type Driver interface {
 // Tokens must increase for each key under the driver's documented persistence and
 // failover model. Gaps are allowed; exhaustion must fail, never wrap.
 type AcquireRequest struct {
-	Key     string
-	Owner   string
-	TTL     time.Duration
+	// Key is the nonempty logical name before any driver-specific namespace prefix.
+	Key string
+	// Owner is a fresh, unguessable, nonempty token; do not reuse it across acquisition attempts.
+	Owner string
+	// TTL is a positive backend validity duration; drivers must never round it down.
+	TTL time.Duration
+	// Fencing requests an atomic, increasing token; unsupported drivers must reject before acquisition.
 	Fencing bool
 }
 
@@ -60,6 +67,8 @@ type AcquireRequest struct {
 // value. Contention returns the zero value. FencingToken is zero for ordinary acquisition
 // and strictly positive for successful fenced acquisition.
 type AcquireResult struct {
-	Acquired     bool
+	// Acquired reports newly granted ownership; inspect it only when the driver error is nil.
+	Acquired bool
+	// FencingToken is nonzero only for successful fenced acquisition; gaps are allowed.
 	FencingToken uint64
 }
