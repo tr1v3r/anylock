@@ -69,33 +69,53 @@ type Lease interface {
 // adds a second worker, so a slow backend cannot delay Done. The Driver must
 // honor operation deadlines so in-flight requests and shutdown remain bounded.
 type lease struct {
-	driver           Driver
-	key              string
-	owner            string
-	fence            uint64
-	ttl              time.Duration
+	// driver is the acquisition backend retained for renewal and cleanup.
+	driver Driver
+	// key is the logical key, without a backend prefix.
+	key string
+	// owner identifies this acquisition; it must never be reused for a successor.
+	owner string
+	// fence is the immutable acquisition token, or zero for ordinary leases.
+	fence uint64
+	// ttl is the original duration used by every renewal.
+	ttl time.Duration
+	// operationTimeout bounds renewal and cleanup requests.
 	operationTimeout time.Duration
-	auto             bool
-	ctx              context.Context
-	cancel           context.CancelFunc
+	// auto enables a separate renewal worker.
+	auto bool
+	// ctx derives from the acquisition context and is canceled on local invalidation.
+	ctx context.Context
+	// cancel stops cooperative work and lifecycle workers after invalidation.
+	cancel context.CancelFunc
 
-	mu           sync.Mutex
-	deadline     time.Time
-	err          error
-	done         chan struct{}
-	stopped      chan struct{}
-	updated      chan struct{}
-	renewWake    chan struct{}
+	// mu protects deadline and the first terminal error.
+	mu sync.Mutex
+	// deadline is conservative local validity, measured from the start of the latest successful request.
+	deadline time.Time
+	// err retains the first terminal cause; nil means locally valid subject to clock/context checks.
+	err error
+	// done closes exactly once when the handle becomes invalid.
+	done chan struct{}
+	// stopped closes after the expiry watcher and optional renewal worker exit.
+	stopped chan struct{}
+	// updated wakes the expiry watcher after a successful renewal.
+	updated chan struct{}
+	// renewWake reschedules automatic renewal after any successful renewal.
+	renewWake chan struct{}
+	// renewStopped closes when the optional renewal worker exits.
 	renewStopped chan struct{}
 
 	// gate serializes remote renewal/release without making context-aware callers
 	// wait unconditionally for a mutex held across an in-flight network operation.
-	gate        chan struct{}
+	gate chan struct{}
+	// releaseDone records successful remote cleanup and is protected by gate.
 	releaseDone bool
 }
 
+// Verify the shared handle implements the public Lease contract.
 var _ Lease = (*lease)(nil)
 
+// newLease binds acquisition identity and starts expiry observation, plus opt-in renewal.
 func newLease(
 	ctx context.Context, locker *Locker, key, owner string, ttl time.Duration, deadline time.Time, fence uint64,
 ) *lease {
@@ -149,6 +169,7 @@ func (l *lease) Err() error {
 	return l.stateLocked()
 }
 
+// stateLocked checks context and time before returning validity; l.mu must be held.
 func (l *lease) stateLocked() error {
 	if l.err == nil {
 		if err := l.ctx.Err(); err != nil {
@@ -160,6 +181,7 @@ func (l *lease) stateLocked() error {
 	return l.err
 }
 
+// finishLocked records only the first terminal cause and closes Done; l.mu must be held.
 func (l *lease) finishLocked(err error) error {
 	if l.err == nil {
 		l.err = err
@@ -169,12 +191,14 @@ func (l *lease) finishLocked(err error) error {
 	return l.err
 }
 
+// finish synchronizes permanent invalidation and returns the retained terminal cause.
 func (l *lease) finish(err error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.finishLocked(err)
 }
 
+// enter waits for the remote-operation gate, optionally aborting when the lease is lost.
 func (l *lease) enter(ctx context.Context, checkLease bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -197,6 +221,7 @@ func (l *lease) enter(ctx context.Context, checkLease bool) error {
 	}
 }
 
+// leave releases a previously acquired remote-operation gate.
 func (l *lease) leave() { l.gate <- struct{}{} }
 
 // Renew extends ownership by the original TTL. It serializes with other Renew
@@ -294,6 +319,7 @@ func (l *lease) Release(ctx context.Context) error {
 	return nil
 }
 
+// run supervises independent expiry and optional renewal workers until both stop.
 func (l *lease) run() {
 	defer close(l.stopped)
 	if l.auto {
@@ -308,6 +334,7 @@ func (l *lease) run() {
 	}
 }
 
+// watch observes invalidation or renews near TTL/3; wake reschedules after deadline updates.
 func (l *lease) watch(renew bool, wake <-chan struct{}) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()

@@ -28,19 +28,21 @@ import (
 	"github.com/tr1v3r/anylock"
 )
 
+// createSQL provisions the permanent ownership table without altering existing objects.
 const createSQL = `CREATE TABLE IF NOT EXISTS %s (
     key text COLLATE pg_catalog."C" PRIMARY KEY,
     owner text COLLATE pg_catalog."C" NOT NULL,
     expires_at timestamp with time zone NOT NULL
 )`
 
+// acquireSQL atomically installs ownership only for an absent or freshly observed expired row.
 const acquireSQL = `INSERT INTO %s AS existing (key, owner, expires_at)
 VALUES ($1, $2, pg_catalog.clock_timestamp() + $3::pg_catalog.interval)
 ON CONFLICT (key) DO UPDATE
 SET owner = EXCLUDED.owner, expires_at = pg_catalog.clock_timestamp() + $3::pg_catalog.interval
 WHERE existing.expires_at <= pg_catalog.clock_timestamp()`
 
-// Check held's owner and expiry only after FOR UPDATE returns the locked row.
+// renewSQL checks held's owner and expiry only after FOR UPDATE returns the locked row.
 // Keep the expiry predicate outside the CTE so it runs after any lock wait.
 // MATERIALIZED makes the boundary explicit; FOR UPDATE also prevents inlining.
 const renewSQL = `WITH held AS MATERIALIZED (
@@ -51,18 +53,24 @@ SET expires_at = pg_catalog.clock_timestamp() + $3::pg_catalog.interval
 FROM held
 WHERE target.key = held.key AND held.owner = $2 AND held.expires_at > pg_catalog.clock_timestamp()`
 
+// releaseSQL deletes only the matching owner, including expired records.
 const releaseSQL = `DELETE FROM %s WHERE key = $1 AND owner = $2`
 
 // Driver implements anylock.Driver over a shared permanent PostgreSQL table.
 // Construct it with New; its zero value is not usable. It is safe for concurrent
 // use. Only *sql.DB is accepted, not an externally managed long-lived transaction.
 type Driver struct {
-	db       *sql.DB
-	prefix   string
-	table    string
+	// db is the caller-owned connection pool; Driver never closes it.
+	db *sql.DB
+	// prefix is prepended verbatim to logical keys before binding SQL parameters.
+	prefix string
+	// table is the validated, quoted, schema-qualified permanent lease table.
+	table string
+	// sequence is the validated, quoted fencing sequence; it must never reset or cycle.
 	sequence string
 }
 
+// Verify the PostgreSQL backend implements the shared driver contract.
 var _ anylock.Driver = (*Driver)(nil)
 
 // Option configures a Driver before it is shared.
@@ -121,6 +129,8 @@ func (d *Driver) EnsureSchema(ctx context.Context) error {
 
 // TryAcquire atomically reserves an absent/expired key. An unexpired row is busy
 // even if its owner matches. Data values are bound parameters, never SQL text.
+// Fencing requires a provisioned sequence (see EnsureFencingSchema). Inspect the
+// result only when err is nil; cancellation does not prove the statement rolled back.
 func (d *Driver) TryAcquire(
 	ctx context.Context, req anylock.AcquireRequest,
 ) (anylock.AcquireResult, error) {
@@ -163,6 +173,7 @@ func (d *Driver) Release(ctx context.Context, key, owner string) (bool, error) {
 	return d.exec(ctx, "release", fmt.Sprintf(releaseSQL, d.table), d.prefix+key, owner)
 }
 
+// exec runs a bounded statement and validates its zero-or-one affected-row result.
 func (d *Driver) exec(ctx context.Context, operation, query string, args ...any) (bool, error) {
 	request, cancel := operationContext(ctx)
 	defer cancel()
@@ -186,6 +197,7 @@ func (d *Driver) exec(ctx context.Context, operation, query string, args ...any)
 	return count == 1, nil
 }
 
+// validateContext rejects unusable receivers and invalid or expired contexts.
 func (d *Driver) validateContext(ctx context.Context) error {
 	if d == nil || d.db == nil {
 		return errors.New("anylock/postgres: nil driver or database")
@@ -196,6 +208,7 @@ func (d *Driver) validateContext(ctx context.Context) error {
 	return requestError(ctx)
 }
 
+// validate additionally requires nonempty PostgreSQL-compatible key and owner strings.
 func (d *Driver) validate(ctx context.Context, key, owner string) error {
 	if err := d.validateContext(ctx); err != nil {
 		return err
@@ -206,6 +219,7 @@ func (d *Driver) validate(ctx context.Context, key, owner string) error {
 	return nil
 }
 
+// operationContext preserves supplied deadlines or supplies a one-second bound.
 func operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
@@ -213,6 +227,7 @@ func operationContext(ctx context.Context) (context.Context, context.CancelFunc)
 	return context.WithTimeout(ctx, time.Second)
 }
 
+// requestError checks both recorded cancellation and the actual deadline clock.
 func requestError(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -223,8 +238,10 @@ func requestError(ctx context.Context) error {
 	return nil
 }
 
+// validText accepts PostgreSQL text values: valid UTF-8 without NUL.
 func validText(value string) bool { return utf8.ValidString(value) && !strings.ContainsRune(value, 0) }
 
+// quoteTable validates a permanent table/sequence name and returns a quoted schema-qualified identifier.
 func quoteTable(name string) (string, error) {
 	parts := strings.Split(name, ".")
 	if len(parts) == 1 {
@@ -244,6 +261,7 @@ func quoteTable(name string) (string, error) {
 	return `"` + parts[0] + `"."` + parts[1] + `"`, nil
 }
 
+// validIdentifier accepts bounded ASCII SQL identifiers without quoting or metacharacters.
 func validIdentifier(name string) bool {
 	if name == "" || len(name) > 63 {
 		return false
@@ -259,6 +277,7 @@ func validIdentifier(name string) bool {
 	return true
 }
 
+// ttlInterval rounds a positive TTL up to microseconds and encodes a portable PostgreSQL interval.
 func ttlInterval(ttl time.Duration) (string, error) {
 	if ttl <= 0 {
 		return "", errors.New("anylock/postgres: TTL must be positive")
