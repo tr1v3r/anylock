@@ -4,9 +4,9 @@
 // Logical key prefixes can subdivide a shared store.
 //
 // TTLs use the process's monotonic clock at nanosecond precision. Expired entries
-// are logically absent and are swept on subsequent operations, including those
-// on unrelated keys. There is no background worker: a completely idle Driver may
-// retain expired entries until another operation or until the Driver is collected.
+// are logically absent and are swept in bounded batches on subsequent operations,
+// including those on unrelated keys. There is no background worker: an idle
+// Driver may retain expired entries until later operations or collection.
 //
 // Fenced acquisition uses an instance-wide monotonic counter. This backend provides
 // no cross-process coordination, restart durability, or exactly-once execution.
@@ -290,9 +290,14 @@ func (d *Driver) ticks() uint64 {
 	return uint64(time.Since(d.epoch))
 }
 
-// sweep removes expired entries while honoring ctx; the store gate must be held.
+// sweepBudget caps unrelated reclamation per operation so expiry bursts do not
+// monopolize the store gate. Target-key validity is checked separately.
+const sweepBudget = 64
+
+// sweep removes up to sweepBudget expired entries while honoring ctx. The store
+// gate must be held; a remaining backlog is reclaimed by later operations.
 func (d *Driver) sweep(ctx context.Context) error {
-	for len(d.expiry) > 0 {
+	for removed := 0; removed < sweepBudget && len(d.expiry) > 0; removed++ {
 		if err := requestError(ctx); err != nil {
 			return err
 		}
