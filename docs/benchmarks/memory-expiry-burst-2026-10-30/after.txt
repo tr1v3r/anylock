@@ -1,0 +1,15 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/tr1v3r/anylock/driver/memory
+cpu: Apple M3 Pro
+BenchmarkRenewAfterExpiryBurst/10000-12         	      20	      4658 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRenewAfterExpiryBurst/10000-12         	      20	      4619 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRenewAfterExpiryBurst/10000-12         	      20	      4675 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRenewAfterExpiryBurst/100000-12        	      20	      6462 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRenewAfterExpiryBurst/100000-12        	      20	      6771 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRenewAfterExpiryBurst/100000-12        	      20	      7279 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRenewAfterExpiryBurst/500000-12        	      20	     12323 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRenewAfterExpiryBurst/500000-12        	      20	     13317 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRenewAfterExpiryBurst/500000-12        	      20	     13115 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/tr1v3r/anylock/driver/memory	3.844s

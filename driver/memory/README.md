@@ -60,8 +60,10 @@ for any live lease, **including the same owner**. Ordinary success returns
 `AcquireResult{Acquired: true}` with FencingToken zero. `Renew` resets only the matching live owner's
 TTL from the current operation; a shorter TTL may shorten ownership. It never
 creates or revives an expired lease. `Release` deletes a stored record only when
-its owner matches, without requiring remaining validity. Operations sweep expired
-entries first, so an expired record may already be absent. Renew returns
+its owner matches, without requiring remaining validity. Operations sweep up to 64 expired
+entries first, so an expired record may already be absent. Every target key is
+checked independently of that budget: expired ownership never blocks acquisition
+or authorizes renewal, and release still checks the owner even outside the batch. Renew returns
 `false, nil` for absent, expired, or wrong-owner records; Release returns
 `false, nil` if no matching record remains. A stale owner cannot affect its successor. The driver
 bool reports an owner-checked deletion, not prior validity. Core `Lease.Release`
@@ -86,7 +88,7 @@ Operations reject nil contexts and check both cancellation and actual deadlines.
 A context-selectable gate bounds synchronization waits; deadline timers also cover
 contexts whose `Err`/`Done` have not yet reported expiry. Context and ownership
 expiry are checked again **after waiting and sweeping**, rather than using stale
-call-entry time. Large sweeps check context between removals. An expired/canceled
+call-entry time. Bounded sweeps check context between removals. An expired/canceled
 wait does not mutate the requested ownership; opportunistic cleanup may already
 have removed unrelated expired entries. Every operation checks cancellation and
 actual deadlines again before returning either an ownership success or contention.
@@ -99,13 +101,17 @@ adds no arbitrary default timeout and starts no goroutine.
 
 A map plus indexed minimum-expiry heap stores one node per resident key. Renewals
 update the existing node, releases remove it, and every valid operation sweeps
-expired roots, even when it targets a different key. There are no permanent
-per-key tombstones or accumulated renewal records. Normal operations cost
-`O(log n)` plus `O(k log n)` for the `k` expired entries swept that time.
+at most 64 expired roots, even when it targets a different key. Target-key
+acquisition/release can remove one additional record independently of that
+budget. There are no permanent per-key tombstones or accumulated renewal records.
+Operations cost `O(log n)` plus `O(min(k, 64) log n)` for an expired backlog of
+`k` entries. The budget limits cleanup work, not elapsed time or gate waiting;
+this is not a hard latency guarantee.
 
 **Idle expiry is logical, not immediate physical reclamation.** With no further
 operations, expired entries can remain allocated until the driver is collected.
-The next operation sweeps them subject to its context. Removed heap slots are
+Subsequent operations reclaim the backlog in bounded batches, subject to their
+contexts; one operation need not remove every expired entry. Removed heap slots are
 cleared; when the store becomes empty its map and heap are discarded. A partially
 occupied store may retain Go map buckets and slice capacity from a high-water
 mark. No ticker, maintenance goroutine, exported clock, or manual GC API is needed.
@@ -148,8 +154,10 @@ The ordinary suite (no environment opt-in) also runs:
   not mistake callbacks continuing after TTL for a driver defect.
 - Repeated controlled expiry turnover with competing successors and stale owners,
   plus a batch of 1024 simultaneously expired keys swept by unrelated operations
-  racing 64 successor workers. Old map/heap storage must be cleared, each successor
-  must survive stale-owner calls, and final cleanup must discard both containers.
+  racing 64 successor workers. Every expired entry must leave the indexes, each
+  successor must survive stale-owner calls, and final cleanup must discard both
+  containers. Deterministic budget regressions also cover live-key operations and
+  expired targets outside the current cleanup batch.
   Only quiescent, gate-protected private expiry state is changed; no production
   clock hook or wall-clock sleeps are needed. This coverage runs on Go 1.24 too;
   existing Go 1.25+ synctest tests additionally exercise real exact clock boundaries.
@@ -262,3 +270,21 @@ Driver instance; replacing/restarting it resets the sequence.
 
 Read [the shared fencing contract](../../docs/fencing.md): business storage must
 atomically validate `Lease.FencingToken()` with protected writes.
+
+## Expiry-burst benchmark
+
+`BenchmarkRenewAfterExpiryBurst` measures one live-key renewal with 10,000, 100,000
+or 500,000 unrelated expired entries. Each iteration builds a fresh map/heap
+fixture outside the timer; only the actual `Renew` call is measured. Run with a
+fixed iteration count because rebuilding the largest fixture is expensive:
+
+```sh
+go test -run '^$' -bench '^BenchmarkRenewAfterExpiryBurst$' -benchtime=20x -count=3
+```
+
+This isolates cleanup-induced latency, not concurrent throughput or a production
+capacity commitment. The correctness tests assert bounded reclamation and owner/
+expiry invariants without machine-dependent latency thresholds. Existing archived
+performance experiments remain unchanged.
+
+See the [2026-10-30 local before/after record](../../docs/benchmarks/memory-expiry-burst-2026-10-30/README.md) for fixture details and raw results.

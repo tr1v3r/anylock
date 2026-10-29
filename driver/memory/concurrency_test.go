@@ -341,10 +341,9 @@ func TestBoundedBatchExpirySweep(t *testing.T) {
 		keyNames[i] = "batch:" + strconv.Itoa(i)
 		acquire(t, d, keyNames[i], "expired-owner", workloadTTL, true)
 	}
-	oldMap := d.entries
-	oldBacking := d.expiry[:cap(d.expiry)]
-	// All workers are quiescent. The first subsequent real operation must
-	// sweep this entire expired batch, even when targeting an unrelated key.
+	oldEntries := append([]*entry(nil), d.expiry...)
+	// All workers are quiescent. Subsequent real operations must eventually
+	// reclaim this expired batch while allowing successors between batches.
 	d.gate <- struct{}{}
 	for _, e := range d.expiry {
 		e.expires = 0
@@ -390,12 +389,17 @@ func TestBoundedBatchExpirySweep(t *testing.T) {
 	ready.Wait()
 	close(start)
 	done.Wait()
-	if ctx.Err() != nil || len(d.entries) != keys || len(d.expiry) != keys || len(oldMap) != 0 {
+	if ctx.Err() != nil || len(d.entries) != keys || len(d.expiry) != keys {
 		t.Fatal("batch sweep leaked expired entries or lost successors", ctx.Err(), len(d.entries), len(d.expiry))
 	}
-	for _, e := range oldBacking {
+	for _, e := range oldEntries {
+		if e.index != -1 || d.entries[e.key] == e {
+			t.Fatal("expired entry remains indexed")
+		}
+	}
+	for _, e := range d.expiry[len(d.expiry):cap(d.expiry)] {
 		if e != nil {
-			t.Fatal("expired heap backing retained an entry")
+			t.Fatal("removed heap slot retains an entry")
 		}
 	}
 	checkHeap(t, d)
